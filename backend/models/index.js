@@ -13,6 +13,9 @@ const db = {
 
 // Register models here as they are created
 db.User = require('./User')(sequelize, Sequelize.DataTypes);
+db.Location = require('./Location')(sequelize, Sequelize.DataTypes);
+db.LocationLog = require('./LocationLog')(sequelize, Sequelize.DataTypes);
+db.MovementRequest = require('./MovementRequest')(sequelize, Sequelize.DataTypes);
 
 // Define associations here
 Object.values(db).forEach((model) => {
