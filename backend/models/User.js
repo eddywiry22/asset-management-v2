@@ -15,6 +15,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(100),
         allowNull: false,
       },
+      phoneNumber: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        field: 'phone_number',
+      },
       email: {
         type: DataTypes.STRING(150),
         allowNull: false,
@@ -29,6 +34,21 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.ENUM('admin', 'manager', 'viewer'),
         allowNull: false,
         defaultValue: 'viewer',
+      },
+      roleId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'role_id',
+      },
+      locationId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'location_id',
+      },
+      status: {
+        type: DataTypes.ENUM('ACTIVE', 'INACTIVE'),
+        allowNull: false,
+        defaultValue: 'ACTIVE',
       },
       isActive: {
         type: DataTypes.BOOLEAN,
@@ -69,9 +89,11 @@ module.exports = (sequelize, DataTypes) => {
     return bcrypt.compare(plaintext, this.password);
   };
 
-  // Associations placeholder
-  User.associate = (_models) => {
-    // e.g. User.hasMany(models.Asset, { foreignKey: 'userId' });
+  User.associate = (models) => {
+    User.belongsTo(models.Role, { foreignKey: 'roleId', as: 'roleInfo' });
+    User.belongsTo(models.Location, { foreignKey: 'locationId', as: 'location' });
+    User.hasMany(models.Goods, { foreignKey: 'createdBy', as: 'createdGoods' });
+    User.hasMany(models.Goods, { foreignKey: 'updatedBy', as: 'updatedGoods' });
   };
 
   return User;
