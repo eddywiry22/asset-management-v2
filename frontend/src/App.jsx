@@ -14,6 +14,7 @@ import StockAdjustmentsPage from '@/pages/StockAdjustmentsPage';
 import MovementsListPage from '@/pages/movements/MovementsListPage';
 import MovementNewPage from '@/pages/movements/MovementNewPage';
 import MovementDetailPage from '@/pages/movements/MovementDetailPage';
+import AuditLogPage from '@/pages/AuditLogPage';
 import NotFoundPage from '@/pages/NotFoundPage';
 
 export default function App() {
@@ -40,6 +41,7 @@ export default function App() {
               <Route path="/movements" element={<MovementsListPage />} />
               <Route path="/movements/new" element={<MovementNewPage />} />
               <Route path="/movements/:id" element={<MovementDetailPage />} />
+              <Route path="/audit-log" element={<AuditLogPage />} />
             </Route>
           </Route>
 

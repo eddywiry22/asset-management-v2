@@ -15,8 +15,9 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_NAV_ITEMS = [
-  { to: '/users',    label: 'Users',    icon: '◎', module: 'users'    },
-  { to: '/settings', label: 'Settings', icon: '⚙', module: 'settings' },
+  { to: '/audit-log', label: 'Audit Log', icon: '☰', module: 'audit'    },
+  { to: '/users',     label: 'Users',     icon: '◎', module: 'users'    },
+  { to: '/settings',  label: 'Settings',  icon: '⚙', module: 'settings' },
 ];
 
 function NavItem({ to, label, icon, onClose }) {
