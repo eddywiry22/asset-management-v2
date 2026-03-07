@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const authRoutes = require('./authRoutes');
+const movementRoutes = require('./movementRoutes');
 
 const router = Router();
 
@@ -8,5 +9,6 @@ const router = Router();
 // router.use('/categories', require('./categoryRoutes'));
 
 router.use('/auth', authRoutes);
+router.use('/movements', movementRoutes);
 
 module.exports = router;
