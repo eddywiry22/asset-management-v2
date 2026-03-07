@@ -44,10 +44,17 @@ const listGoods = async (filters = {}) => {
 
 /**
  * Return a single goods record by primary key.
+ *
+ * BUG-R3-06: Goods.findByPk respects the defaultScope (status=ACTIVE) in some
+ * Sequelize versions but NOT reliably in v6. Regardless, admins need to be
+ * able to look up INACTIVE goods (e.g. to edit or reactivate them). Using
+ * unscoped() ensures the record is always found regardless of status, and the
+ * caller or the route layer can enforce visibility rules as needed.
+ *
  * @param {number} id
  */
 const getGoodsById = async (id) => {
-  const goods = await Goods.findByPk(id);
+  const goods = await Goods.unscoped().findByPk(id);
   if (!goods) throw new AppError('Goods not found', 404);
   return goods;
 };

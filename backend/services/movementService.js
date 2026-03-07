@@ -105,8 +105,18 @@ const findDuplicateActiveMovement = async (originLocationId, destinationLocation
 const previewMovement = async (originLocationId, destinationLocationId, items) => {
   const rows = [];
   for (const { goodsId, quantity } of items) {
-    const goods = await Goods.findByPk(goodsId, { attributes: ['id', 'name', 'productId', 'status'] });
+    // BUG-R3-05: Sequelize v6 findByPk does NOT apply defaultScope, so an
+    // INACTIVE goods record would be found and returned. Use unscoped() to
+    // bypass the defaultScope entirely, then perform an explicit status check
+    // below so that the correct 404 vs 400 error is returned in each case.
+    // BUG-R3-01: Without this explicit check, inactive goods can be previewed
+    // without error, violating the business rule that INACTIVE goods must not
+    // be selectable in movement requests.
+    const goods = await Goods.unscoped().findByPk(goodsId, { attributes: ['id', 'name', 'productId', 'status'] });
     if (!goods) throw new AppError(`Goods with ID ${goodsId} not found`, 404);
+    if (goods.status !== 'ACTIVE') {
+      throw new AppError(`Goods "${goods.name}" is inactive and cannot be used in a movement`, 400);
+    }
 
     const originQtyBefore = await fetchStockQty(originLocationId, goodsId);
     const destQtyBefore = await fetchStockQty(destinationLocationId, goodsId);
@@ -357,17 +367,24 @@ const approveByHead = async (userId, movementId) => {
   return getMovement(movementId);
 };
 
-const approveByDestination = async (userId, movementId, userLocationId) => {
+const approveByDestination = async (userId, movementId, userLocationId, userRole) => {
   const movement = await MovementHeader.findByPk(movementId);
   if (!movement) throw new AppError('Movement not found', 404);
   if (movement.status !== 'PENDING_DESTINATION_APPROVAL') {
     throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
   }
 
+  // BUG-R3-02: admin and manager do not have a locationId assigned, so the
+  // ownership check always failed for them — making their route permission
+  // effectively dead. Privileged roles are explicitly exempted from the
+  // location-ownership requirement; all other roles (destination_operator)
+  // must still belong to the destination location.
+  //
   // BUG-05: Destination location ownership check — the approver must belong to
   // the destination location. A null/missing locationId must NOT bypass this
-  // guard; it is treated as a mismatch (fail-closed).
-  if (!userLocationId || userLocationId !== movement.destinationLocationId) {
+  // guard for non-privileged users; it is treated as a mismatch (fail-closed).
+  const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
+  if (!isPrivilegedRole && (!userLocationId || userLocationId !== movement.destinationLocationId)) {
     throw new AppError(
       'You can only approve movements where you are the destination location operator',
       403
@@ -394,13 +411,21 @@ const approveByDestination = async (userId, movementId, userLocationId) => {
   return getMovement(movementId);
 };
 
-const finalizeMovement = async (userId, movementId) => {
+const finalizeMovement = async (userId, movementId, userRole) => {
   const movement = await MovementHeader.findByPk(movementId, {
     include: [{ model: MovementDetail, as: 'details' }],
   });
   if (!movement) throw new AppError('Movement not found', 404);
   if (movement.status !== 'APPROVED_READY_FOR_FINALIZATION') {
     throw new AppError(`Cannot finalize: movement is currently "${movement.status}"`, 400);
+  }
+
+  // BUG-R3-03: Without an ownership check, any warehouse_operator could finalize
+  // any approved movement — not just their own. Restrict warehouse_operator to
+  // movements they originally created. admin and manager may finalize any movement.
+  const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
+  if (!isPrivilegedRole && movement.requestedById !== userId) {
+    throw new AppError('You can only finalize movements that you created', 403);
   }
 
   const before = { status: movement.status };

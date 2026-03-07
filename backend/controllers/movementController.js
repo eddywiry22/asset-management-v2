@@ -50,11 +50,14 @@ const approveHead = async (req, res, next) => {
 
 const approveDest = async (req, res, next) => {
   try {
-    // Pass the operator's locationId for destination ownership check
+    // Pass the operator's locationId and role for destination ownership check.
+    // BUG-R3-02: role is required so the service can exempt admin/manager from
+    // the location-ownership requirement (they have no locationId).
     const movement = await movementService.approveByDestination(
       req.user.id,
       req.params.id,
-      req.user.locationId
+      req.user.locationId,
+      req.user.role
     );
     return success(res, movement, 'Movement approved by destination');
   } catch (err) {
@@ -64,7 +67,9 @@ const approveDest = async (req, res, next) => {
 
 const finalize = async (req, res, next) => {
   try {
-    const movement = await movementService.finalizeMovement(req.user.id, req.params.id);
+    // BUG-R3-03: pass role so the service can enforce requester-only finalization
+    // for warehouse_operator while allowing admin/manager to finalize any movement.
+    const movement = await movementService.finalizeMovement(req.user.id, req.params.id, req.user.role);
     return success(res, movement, 'Movement finalized and stock updated');
   } catch (err) {
     return next(err);

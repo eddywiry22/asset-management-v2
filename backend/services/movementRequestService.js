@@ -88,10 +88,38 @@ async function getAll(filters, user) {
  * rather than the raw snake_case DB column names that Sequelize silently ignores.
  */
 async function create(data, user) {
+  const { fromLocationId, toLocationId } = data;
+
+  if (!fromLocationId || !toLocationId) {
+    throw new AppError('fromLocationId and toLocationId are required', 400);
+  }
+
+  if (Number(fromLocationId) === Number(toLocationId)) {
+    throw new AppError('Origin and destination locations cannot be the same', 400);
+  }
+
+  // BUG-R3-04: Duplicate detection — block if an active (non-finalized) request
+  // already exists for the same requester, origin, and destination.
+  // Active statuses in this simplified model: PENDING, IN_TRANSIT.
+  const duplicate = await MovementRequest.findOne({
+    where: {
+      requestedBy: user.id,
+      fromLocationId,
+      toLocationId,
+      status: { [Op.in]: ['PENDING', 'IN_TRANSIT'] },
+    },
+  });
+  if (duplicate) {
+    throw new AppError(
+      `A duplicate active movement request (ID: ${duplicate.id}) already exists for this route`,
+      409
+    );
+  }
+
   return MovementRequest.create({
     requestedBy: user.id,
-    fromLocationId: data.fromLocationId,
-    toLocationId: data.toLocationId,
+    fromLocationId,
+    toLocationId,
     status: 'PENDING',
   });
 }
