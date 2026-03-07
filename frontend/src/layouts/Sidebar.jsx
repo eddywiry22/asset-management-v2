@@ -10,6 +10,7 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_NAV_ITEMS = [
+  { to: '/audit-log', label: 'Audit Log', icon: '◈' },
   // { to: '/users', label: 'Users', icon: '◎' },
   // { to: '/settings', label: 'Settings', icon: '⚙' },
 ];
@@ -67,12 +68,12 @@ export default function Sidebar({ isOpen, onClose }) {
               </li>
             ))}
 
-            {/* Admin-only section */}
-            {user?.role === 'admin' && ADMIN_NAV_ITEMS.length > 0 && (
+            {/* Admin/Manager section */}
+            {(user?.role === 'admin' || user?.role === 'manager') && ADMIN_NAV_ITEMS.length > 0 && (
               <>
                 <li className="pt-4 pb-1">
                   <span className="px-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Administration
+                    Management
                   </span>
                 </li>
                 {ADMIN_NAV_ITEMS.map(({ to, label, icon }) => (
