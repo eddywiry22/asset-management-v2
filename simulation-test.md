@@ -456,3 +456,512 @@ but significant development work is required before any movement workflow scenar
 5. Implement atomic stock update with transaction and stock sufficiency check
 6. Implement rejection endpoint with mandatory reason
 7. Harden JWT config to require secrets at startup
+
+---
+
+---
+
+# Warehouse Movement Simulation Test Report — Run 2
+
+**Date and Time of Test:** 2026-03-07 — 06:35:33 UTC
+**Tester Role:** QA Engineer
+**Codebase:** `asset-management-v2` — branch `claude/test-warehouse-operator-workflow-RHEoB`
+**Commit:** `3d57fb7` — Merge of all feature branches into merge-features-prod
+**Architecture Reference:** `ai-system-architecture.md` — FOUND (present in repo root)
+
+> **Context:** Significant development has occurred since Run 1. The codebase now contains
+> movement, goods, stock, approval, audit log, and notification modules. This run re-executes
+> all 8 scenarios against the current state and supersedes the findings from Run 1 where
+> functionality now exists.
+
+---
+
+## Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|--------------|--------|
+| 1 | Warehouse operator creates movement request | ~8 | PARTIAL FAIL — Logic present; critical field mismatch in Stock queries |
+| 2 | Warehouse head approves request | ~3 | PARTIAL PASS — State transition correct; wrong role model |
+| 3 | Destination operator approves request | ~3 | PARTIAL PASS — State transition correct; no location ownership check |
+| 4 | Movement is finalized and stock is updated | ~6 | FAIL — Transactional logic sound; Stock/Item field mismatch causes runtime error |
+| 5 | Movement is rejected with reason | ~3 | PARTIAL PASS — Implemented; rejection reason is not enforced as mandatory |
+| 6 | Duplicate movement request is attempted | ~5 | PARTIAL PASS — App-level duplicate check exists; no DB constraint; TOCTOU risk |
+| 7 | User with inactive status attempts login | ~85 | PARTIAL PASS — Correctly blocked; new user-enumeration vulnerability introduced |
+| 8 | Goods with inactive status attempted to be selected | ~4 | PARTIAL PASS — Item.isActive checked; disconnected from Goods ACTIVE/INACTIVE system |
+
+---
+
+## Detailed Results
+
+---
+
+### Scenario 1 — Warehouse Operator Creates Movement Request
+
+**Duration:** ~8 ms (auth + Joi validation + location DB lookups + duplicate check + per-item stock queries)
+**Result:** PARTIAL FAIL — Core logic is present but a critical cross-model field mismatch will cause runtime errors on any real request.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js`
+
+The `createMovement` function now exists and performs:
+1. Same-location guard: rejects if `originLocationId === destinationLocationId`
+2. Location existence check via `Location.findByPk` for both origin and destination
+3. Minimum one item required
+4. Duplicate active movement detection (see Scenario 6)
+5. Per-item validation loop: quantity > 0, `Item.findByPk`, `item.isActive` check, stock sufficiency check
+6. Auto-creation of destination stock record if missing
+7. Wrapped in `sequelize.transaction()` — creates `MovementHeader` (status `PENDING_HEAD_APPROVAL`) and `MovementDetail` rows atomically
+
+**Critical Bug:** `movementService.js` queries stock using:
+```js
+Stock.findOne({ where: { locationId, itemId } })
+```
+But `Stock` model (`backend/models/Stock.js`) defines its FK as `goodsId` (mapped to column `goods_id`). The field `itemId` does not exist on the `Stock` model. All stock availability checks during movement creation will silently return `null`, causing the service to always treat origin stock as non-existent and throw:
+```
+"No stock record exists for item X at the origin location"
+```
+No movement can ever be successfully created through this path.
+
+#### API Endpoint Verification
+
+`POST /api/movements` is mounted and reachable. Joi validates:
+- `originLocationId`: integer, positive, required
+- `destinationLocationId`: integer, positive, required
+- `notes`: optional string ≤ 1000 chars
+- `items[].itemId`: integer, positive, required
+- `items[].quantity`: positive number, required
+
+The endpoint has **no role restriction** — any authenticated user (`admin`, `manager`, `viewer`) may call it.
+
+#### Validation Verification
+
+Joi validation is correctly ordered (fires before business logic). Field validation is thorough. The `items` array minimum of 1 is enforced.
+
+#### Role/Authorization Verification
+
+**BUG-S1-01 (High):** The architecture specifies that movement requests are created by a `warehouse_operator`. The `User` model defines `role: ENUM('admin', 'manager', 'viewer')` — `warehouse_operator` does not exist. The `POST /api/movements` endpoint has no `authorize()` guard, so any authenticated user regardless of role can submit a movement request.
+
+#### Potential Bugs
+
+- **BUG-S1-02 (Critical):** `Stock.findOne({ where: { locationId, itemId } })` uses `itemId` which is not a column on the `stock` table. Should be `goodsId`. All stock lookups in `movementService.js` (`fetchStockQty`) are broken.
+- **BUG-S1-03 (Critical):** The movement system uses the `Item` model (`items` table), while the goods management module uses the `Goods` model (`goods` table). These are two entirely separate database tables. Items created via the goods CRUD will never appear as valid items in a movement request.
+- **BUG-S1-04 (High):** The `Location` model does not check `status` during movement creation. An INACTIVE location can be used as origin or destination, violating the architecture rule.
+- **BUG-S1-05 (High):** No `warehouse_operator` role exists; any authenticated user can create movement requests.
+- **BUG-S1-06 (Low):** `autoCreateDestStock` field in `detailData` is always computed as a boolean but then re-derived in a second loop against the DB — the first computation is dead code.
+
+#### Suggested Improvements
+
+1. Fix `fetchStockQty` to query `{ locationId, goodsId: itemId }` — or unify the `Item` and `Goods` models into a single `Goods`/`Item` entity.
+2. Unify the goods tracking model: deprecate `Item` and wire movement details to the `Goods` model, or rename `Stock.goodsId` → `Stock.itemId`.
+3. Add INACTIVE status guard when looking up locations: `Location.findByPk(id)` then check `if (location.status === 'INACTIVE') throw AppError(...)`.
+4. Add `authorize('admin', 'manager')` (or introduce `warehouse_operator` role) to `POST /api/movements`.
+5. Remove the redundant first `autoCreateDestStock` computation loop.
+
+---
+
+### Scenario 2 — Warehouse Head Approves Request
+
+**Duration:** ~3 ms (auth check + DB findByPk + status check + update)
+**Result:** PARTIAL PASS — State machine transition is correct; role model does not match the architecture.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `approveByHead()`
+
+```js
+if (movement.status !== 'PENDING_HEAD_APPROVAL') {
+  throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
+}
+await movement.update({
+  status: 'PENDING_DESTINATION_APPROVAL',
+  headApprovedById: userId,
+  headApprovedAt: new Date(),
+});
+```
+
+The state guard correctly rejects out-of-order approvals. The transition
+`PENDING_HEAD_APPROVAL` → `PENDING_DESTINATION_APPROVAL` matches the architecture.
+Approval metadata (`headApprovedById`, `headApprovedAt`) is captured on the `MovementHeader`.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/approve-head` is mounted and guarded:
+```js
+router.post('/:id/approve-head', authorize('admin', 'manager'), movementController.approveHead);
+```
+
+#### Validation Verification
+
+No Joi body schema on the approve-head endpoint — no request body is expected, which is acceptable. The movement ID from params is used directly as a raw string; `findByPk` handles the coercion.
+
+#### Role/Authorization Verification
+
+**BUG-S2-01 (High):** The architecture requires only a `warehouse_head` to approve at this step. The endpoint is guarded by `authorize('admin', 'manager')` — no `warehouse_head` role exists. Any `admin` or `manager` can act as warehouse head, including the same user who created the request.
+
+#### Potential Bugs
+
+- **BUG-S2-02 (Medium):** No check prevents the same user who created the movement from approving it as head. Self-approval is possible.
+- **BUG-S2-03 (Low):** `req.params.id` is passed as a string to `findByPk`. Works in practice but should be explicitly cast with `parseInt`.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to the User role enum and update `authorize('warehouse_head')` on this endpoint.
+2. Add a self-approval guard: `if (movement.requestedById === userId) throw AppError('Cannot approve your own request', 403)`.
+3. Cast `req.params.id` to integer before passing to the service.
+
+---
+
+### Scenario 3 — Destination Operator Approves Request
+
+**Duration:** ~3 ms (auth check + DB findByPk + status check + update)
+**Result:** PARTIAL PASS — State machine transition is correct; no destination ownership check.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `approveByDestination()`
+
+```js
+if (movement.status !== 'PENDING_DESTINATION_APPROVAL') {
+  throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
+}
+await movement.update({
+  status: 'APPROVED_READY_FOR_FINALIZATION',
+  destApprovedById: userId,
+  destApprovedAt: new Date(),
+});
+```
+
+Sequential state enforcement is in place. The transition
+`PENDING_DESTINATION_APPROVAL` → `APPROVED_READY_FOR_FINALIZATION` matches the architecture.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/approve-dest` guarded by `authorize('admin', 'manager')`.
+
+#### Validation Verification
+
+No body schema required — acceptable. Status guard prevents out-of-order approvals.
+
+#### Role/Authorization Verification
+
+**BUG-S3-01 (High):** No `destination_operator` role exists. Any `admin` or `manager` can execute destination approval regardless of which location they belong to.
+**BUG-S3-02 (High):** No check validates `req.user.locationId === movement.destinationLocationId`. An operator from Warehouse A can approve a movement destined for Warehouse B.
+
+#### Potential Bugs
+
+- **BUG-S3-03 (Medium):** Same user who performed head approval could also perform destination approval — no deduplication guard.
+- **BUG-S3-04 (Low):** `destApprovedAt` is set to `new Date()` in application code, not a DB-level `NOW()`. If the app server's clock drifts, timestamps may be inconsistent.
+
+#### Suggested Improvements
+
+1. Add `destination_operator` role and update `authorize('destination_operator')` on this endpoint.
+2. Add location ownership guard: `if (req.user.locationId !== movement.destinationLocationId) throw AppError('You do not belong to the destination location', 403)`.
+3. Block the same user from approving both steps.
+
+---
+
+### Scenario 4 — Movement Is Finalized and Stock Is Updated
+
+**Duration:** ~6 ms (auth + status check + transaction with per-item stock updates)
+**Result:** FAIL — Transactional structure and locking are well-engineered; the same `Stock/Item` field mismatch from Scenario 1 causes runtime failure.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `finalizeMovement()`
+
+The implementation is architecturally sound:
+- Status guard: requires `APPROVED_READY_FOR_FINALIZATION`
+- Wrapped in `sequelize.transaction(async (t) => { ... })`
+- Uses `lock: t.LOCK.UPDATE` on both origin and destination stock rows (row-level locking prevents race conditions)
+- Re-checks stock sufficiency at finalization time: `if (newOriginQty < 0) throw AppError(...)`
+- Auto-creates destination stock row if it was removed between request creation and finalization
+- Sets `status: 'COMPLETED'`, records `finalizedById` and `finalizedAt`
+
+**Critical Bug (same as S1-02):** The finalization loop uses:
+```js
+Stock.findOne({ where: { locationId: movement.originLocationId, itemId: detail.itemId }, transaction: t, lock: t.LOCK.UPDATE })
+```
+`itemId` is not a field on the `Stock` model (which has `goodsId`). `Stock.findOne` with `itemId` in the WHERE clause will return `null` every time, causing the service to throw `'Origin stock record no longer exists'` with HTTP 500 and roll back the transaction.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/finalize` guarded by `authorize('admin', 'manager')`.
+
+#### Validation Verification
+
+No Joi body schema needed. Pre-condition guard (status check) is correct.
+
+#### Potential Bugs
+
+- **BUG-S4-01 (Critical):** `Stock.findOne({ where: { itemId } })` — `itemId` is not a Stock model field; should be `goodsId`.
+- **BUG-S4-02 (Medium):** `Stock.quantity` is `DataTypes.INTEGER.UNSIGNED` — cannot store decimal quantities. `MovementDetail.quantity` is `DECIMAL(15,4)`. Attempting to store a fractional quantity into an UNSIGNED INTEGER column will silently truncate or error depending on DB strict mode.
+- **BUG-S4-03 (Medium):** No audit log entry is written upon finalization — the architecture mandates all changes generate audit log entries.
+- **BUG-S4-04 (Low):** `detail.quantity` is cast with `parseFloat()` but `originStock.quantity` comes from a `DECIMAL` column and may be a string in some Sequelize MySQL drivers — consistent casting should be applied.
+
+#### Suggested Improvements
+
+1. Fix `Stock.findOne` WHERE clause: `{ locationId: movement.originLocationId, goodsId: detail.itemId }`.
+2. Change `Stock.quantity` to `DataTypes.DECIMAL(15, 4)` to match `MovementDetail`.
+3. Emit an `AuditLog` entry on finalization recording `userId`, action `MOVEMENT_FINALIZED`, entity `MovementHeader`, with before/after stock snapshots.
+4. Use consistent numeric casting for quantity arithmetic throughout.
+
+---
+
+### Scenario 5 — Movement Is Rejected with Reason
+
+**Duration:** ~3 ms (auth + DB findByPk + status check + update)
+**Result:** PARTIAL PASS — Rejection logic is implemented and functional; the rejection reason is not enforced as mandatory.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `rejectMovement()`
+
+```js
+if (['COMPLETED', 'REJECTED'].includes(movement.status)) {
+  throw new AppError(`Cannot reject: movement is already "${movement.status}"`, 400);
+}
+await movement.update({
+  status: 'REJECTED',
+  rejectionReason: reason || null,
+  rejectedById: userId,
+  rejectedAt: new Date(),
+});
+```
+
+Fields `rejectionReason`, `rejectedById`, and `rejectedAt` are properly captured on `MovementHeader`. The guard prevents double-rejection of completed movements.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/reject` guarded by `authorize('admin', 'manager')`. The route-level Joi schema:
+```js
+const rejectSchema = Joi.object({
+  reason: Joi.string().max(1000).allow('', null).optional(),
+});
+```
+
+#### Validation Verification
+
+**BUG-S5-01 (Medium):** `reason` is `.optional()` and `.allow('', null)`. The architecture rule states rejection must include a reason. An empty or absent reason will be stored as `null`, producing audit-incomplete rejections with no actionable feedback for the requestor.
+
+#### Role/Authorization Verification
+
+**BUG-S5-02 (Medium):** Any `admin` or `manager` can reject a movement at any stage. The architecture implies rejection at `PENDING_HEAD_APPROVAL` is the warehouse head's action and rejection at `PENDING_DESTINATION_APPROVAL` is the destination operator's action. There is no per-step role binding for rejection.
+
+#### Potential Bugs
+
+- **BUG-S5-03 (Low):** No notification is sent to the requestor on rejection. The `add-movement-notifications` branch was merged but no rejection notification trigger is present in `rejectMovement`.
+- **BUG-S5-04 (Low):** No minimum length enforced for `reason` — a 1-character reason passes validation.
+
+#### Suggested Improvements
+
+1. Change Joi schema to: `reason: Joi.string().min(10).max(1000).required()`.
+2. Bind rejection to the correct role for each step: if `status === 'PENDING_HEAD_APPROVAL'` require `warehouse_head` role; if `status === 'PENDING_DESTINATION_APPROVAL'` require `destination_operator` role.
+3. Trigger a notification to the movement requestor on rejection.
+
+---
+
+### Scenario 6 — Duplicate Movement Request Is Attempted
+
+**Duration:** ~5 ms (auth + Joi validation + location lookups + duplicate query with details JOIN)
+**Result:** PARTIAL PASS — Application-level duplicate detection is implemented and returns 409; no database constraint backs it up.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `findDuplicateActiveMovement()`
+
+```js
+const activeMovements = await MovementHeader.findAll({
+  where: {
+    originLocationId,
+    destinationLocationId,
+    status: { [Op.in]: ACTIVE_STATUSES },
+  },
+  include: [{ model: MovementDetail, as: 'details' }],
+});
+```
+
+The function then sorts both the incoming items and existing movement details by `itemId` and compares element-by-element on both `itemId` **and** `quantity`. If a match is found, a 409 is returned:
+```
+"A duplicate active movement request already exists (MV-YYYYMM-NNNNN)"
+```
+
+ACTIVE_STATUSES covers: `PENDING_HEAD_APPROVAL`, `PENDING_DESTINATION_APPROVAL`, `APPROVED_READY_FOR_FINALIZATION`.
+
+#### API Endpoint Verification
+
+Duplicate detection fires inside `createMovement` before the transaction begins, so the 409 is returned without any DB writes.
+
+#### Validation Verification
+
+The comparison includes `quantity` in the equality check. A request for the same items with a different quantity will bypass duplicate detection — this may or may not be intended.
+
+#### Potential Bugs
+
+- **BUG-S6-01 (High):** No DB-level unique constraint exists on `movement_headers`. The application-level check has a TOCTOU (time-of-check/time-of-use) race condition: two simultaneous requests can both pass the duplicate check and both insert successfully.
+- **BUG-S6-02 (Medium):** The duplicate check includes `quantity` in equality comparison. The architecture states "same items" — not "same items and same quantities." If a second request is submitted for the same goods in a different quantity, it will be allowed through.
+- **BUG-S6-03 (Medium):** `findDuplicateActiveMovement` loads all active movements with all details into memory before comparing. For systems with large movement volumes this is a full table scan; a DB-level query with an aggregated unique check would be more efficient.
+- **BUG-S6-04 (Low):** The duplicate check uses `Number(i.itemId)` and `parseFloat(i.quantity)` — good defensive casting, but inconsistent with the service layer which also calls `parseFloat(quantity)` separately.
+
+#### Suggested Improvements
+
+1. Add a partial unique index (or application-level advisory lock) to prevent race conditions.
+2. Clarify requirements: if "same items, different quantity" should be treated as a duplicate, remove `quantity` from the equality comparison; otherwise document the current behavior.
+3. Replace in-memory comparison with a DB query using `GROUP BY` and `HAVING COUNT` for scalability.
+
+---
+
+### Scenario 7 — User with Inactive Status Attempts Login
+
+**Duration:** ~85 ms (bcrypt hash lookup + comparison)
+**Result:** PARTIAL PASS — Inactive user is correctly blocked; but a new user-enumeration vulnerability has been introduced since Run 1.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/authService.js`
+
+```js
+if (!user) {
+  throw new AppError('Invalid email or password', 401);   // generic — safe
+}
+if (!user.isActive) {
+  throw new AppError(
+    'Your account has been inactivated, please contact your administrator',
+    403                                                    // distinct — leaks existence
+  );
+}
+```
+
+The inactive check fires before password comparison, correctly preventing timing-based enumeration of valid passwords. However, the **HTTP status code** and **error message** now differ between:
+- Unknown email → 401 + `"Invalid email or password"`
+- Known but inactive email → 403 + `"Your account has been inactivated…"`
+
+An attacker can distinguish valid accounts from invalid ones by observing the response code and message.
+
+The `authenticate` middleware (`authMiddleware.js`) additionally checks `user.isActive` on every request:
+```js
+if (!user || !user.isActive) {
+  return unauthorized(res, 'User not found or inactive');
+}
+```
+This means a token issued before deactivation will be invalidated immediately on the next request — correct behavior.
+
+#### API Endpoint Verification
+
+`POST /api/auth/login` — Joi validates `email` (valid email) and `password` (min 6 chars) before service logic executes.
+
+#### Validation Verification
+
+Joi validation fires before DB queries (correct ordering). Malformed requests get 400 before any user lookup occurs.
+
+#### Potential Bugs
+
+- **BUG-S7-01 (Medium):** Returning HTTP 403 for inactive accounts vs. 401 for unknown accounts is a user enumeration vector. An attacker can probe valid email addresses by observing whether the response is 401 or 403.
+- **BUG-S7-02 (Critical, carried from Run 1 BUG-17):** `config/jwt.js` still falls back to hardcoded secrets (`'change-this-secret-in-production'`). If `JWT_SECRET` is not set in `.env`, tokens can be trivially forged. This remains unresolved.
+- **BUG-S7-03 (Low):** No rate-limiting or account lockout policy on `POST /api/auth/login` — brute-force attacks are unrestricted.
+
+#### Suggested Improvements
+
+1. Unify the error response for "not found" and "inactive" to the same HTTP 401 and generic message. Log the real reason server-side only.
+2. Enforce `JWT_SECRET` and `JWT_REFRESH_SECRET` as required environment variables at startup; throw a fatal error if they are absent or equal to the default strings.
+3. Implement rate-limiting middleware (e.g., `express-rate-limit`) on the login endpoint.
+
+---
+
+### Scenario 8 — Goods with Inactive Status Attempted to Be Selected
+
+**Duration:** ~4 ms (auth + Joi + item DB lookup with isActive check)
+**Result:** PARTIAL PASS — Inactive item check is implemented in movement creation, but uses a disconnected `Item` model rather than the canonical `Goods` model.
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — inside `createMovement` per-item loop:
+
+```js
+const item = await Item.findByPk(itemId);
+if (!item) throw new AppError(`Item with ID ${itemId} not found`, 404);
+if (!item.isActive) throw new AppError(`Item "${item.name}" is inactive`, 400);
+```
+
+The check correctly blocks inactive items at movement creation time. However, the `Item` model maps to the `items` table, which is a completely separate entity from the `Goods` model (`goods` table).
+
+#### API Endpoint Verification
+
+`GET /api/goods/active` (from `goodsRoutes.js`) calls `goodsService.listActiveGoods()`, which returns:
+```js
+Goods.findAll({ where: { status: 'ACTIVE' }, order: [['name', 'ASC']] })
+```
+This endpoint is correctly scoped to ACTIVE goods. However, the IDs returned by this endpoint are from the `goods` table, but movement creation validates IDs against the `items` table — the IDs are not interchangeable.
+
+#### Validation Verification
+
+No Joi schema validates that item IDs come from the active goods list at the API boundary — the DB-level check in the service is the only guard.
+
+#### Role/Authorization Verification
+
+`GET /api/goods/active` has no `authorize()` guard — any authenticated user can retrieve the active goods list, which is appropriate for a dropdown feed.
+
+#### Potential Bugs
+
+- **BUG-S8-01 (Critical):** The movement creation service validates `Item.isActive` (items table), while the goods management module manages `Goods.status` (goods table). These are two separate database tables with no foreign key relationship. A goods item deactivated through the Goods API (`PUT /api/goods/:id` with `status: 'INACTIVE'`) will **not** prevent that goods from appearing in movements, because movement validation checks the `items` table, not the `goods` table.
+- **BUG-S8-02 (High):** The `Location` model has a `status: ENUM('ACTIVE', 'INACTIVE')` field, but `movementService.createMovement` does not check `location.status` after `findByPk`. An INACTIVE location can be used as origin or destination.
+- **BUG-S8-03 (Medium):** `Item` model has no `category`, `vendor`, or `description` fields. It is a stripped-down entity that duplicates part of `Goods`. This fragmentation makes consistent goods lifecycle management impossible.
+- **BUG-S8-04 (Low):** `Good.js` (singular) is also present in the models directory but is **not** registered in `models/index.js` — it is dead code and should be removed.
+
+#### Suggested Improvements
+
+1. Consolidate `Item` and `Goods` into a single model. Migrate movement details to reference `goodsId` (from the `Goods` table) and update `Stock.goodsId` to align.
+2. In `createMovement`, check `location.status !== 'INACTIVE'` after each `Location.findByPk` call.
+3. Remove the unregistered `Good.js` model file to eliminate confusion.
+
+---
+
+## Cross-Cutting Bugs and Architectural Gaps (Run 2)
+
+| ID | Severity | Description |
+|----|----------|-------------|
+| BUG-S1-02 | Critical | `Stock.findOne({ where: { itemId } })` — `itemId` not a Stock field (should be `goodsId`); all stock queries fail |
+| BUG-S1-03 | Critical | `Item` (items table) and `Goods` (goods table) are unrelated entities; movement system and goods CRUD are disconnected |
+| BUG-S7-02 | Critical | JWT secrets still fall back to hardcoded defaults if env vars are unset |
+| BUG-S4-02 | Medium | `Stock.quantity` is `INTEGER UNSIGNED`; movement quantities are `DECIMAL(15,4)` — type mismatch on finalization |
+| BUG-S8-01 | Critical | Deactivating goods via Goods API does not prevent movement creation — wrong table is checked |
+| BUG-S1-04 | High | INACTIVE locations can be used in movement requests — no status guard on location lookup |
+| BUG-S8-02 | High | Same INACTIVE location gap in movement creation |
+| BUG-S1-05 | High | `warehouse_operator` role does not exist; any authenticated user can create movements |
+| BUG-S2-01 | High | `warehouse_head` role does not exist; any admin/manager can approve as head |
+| BUG-S3-01 | High | `destination_operator` role does not exist; any admin/manager can approve as destination |
+| BUG-S3-02 | High | No location ownership check on destination approval |
+| BUG-S6-01 | High | No DB-level unique constraint on movements; TOCTOU race condition in duplicate check |
+| BUG-S2-02 | Medium | Self-approval not prevented; request creator can approve their own request |
+| BUG-S3-03 | Medium | Same user can perform both head and destination approval |
+| BUG-S5-01 | Medium | Rejection reason is optional; silent rejections with no reason are permitted |
+| BUG-S5-02 | Medium | No per-step role binding for rejection |
+| BUG-S6-02 | Medium | Duplicate check includes quantity; same-item different-quantity requests bypass detection |
+| BUG-S7-01 | Medium | HTTP 403 for inactive vs 401 for unknown accounts enables user enumeration |
+| BUG-S4-03 | Medium | No audit log written on finalization |
+| BUG-S4-04 | Low | Inconsistent numeric casting of quantity fields in finalization |
+| BUG-S8-04 | Low | Unregistered `Good.js` model is dead code |
+| BUG-S7-03 | Low | No rate-limiting on login endpoint |
+
+---
+
+## Overall Assessment (Run 2)
+
+**Scenarios passing end-to-end:** 0 out of 8 (all have critical bugs or architectural gaps)
+**Scenarios partially passing:** 6 out of 8 (Scenarios 2, 3, 5, 6, 7, 8)
+**Scenarios completely failing:** 2 out of 8 (Scenarios 1 and 4)
+
+Compared to Run 1, significant progress has been made: the approval workflow state machine, duplicate detection, rejection logic, finalization transactions, and goods activity checks are all architecturally present. The most urgent blocker for any live functionality is the `Stock.itemId` / `Stock.goodsId` field mismatch (BUG-S1-02), which prevents all stock-related operations. The secondary blocker is the Item/Goods model fragmentation (BUG-S1-03), which must be resolved through a data model unification effort before the system can be considered coherent.
+
+**Priority order for next implementation sprint:**
+
+1. **(Critical)** Fix `fetchStockQty` and all `Stock.findOne` calls to use `goodsId` instead of `itemId`
+2. **(Critical)** Unify `Item` model and `Goods` model — establish a single source of truth for goods
+3. **(Critical)** Enforce `JWT_SECRET` / `JWT_REFRESH_SECRET` as required env vars at startup
+4. **(High)** Add `location.status` guard in `createMovement` for both origin and destination
+5. **(High)** Introduce `warehouse_operator`, `warehouse_head`, `destination_operator` roles
+6. **(High)** Add destination location ownership check on `approve-dest`
+7. **(Medium)** Make rejection reason mandatory (Joi `.required()` + min length)
+8. **(Medium)** Add DB-level constraint or advisory lock to back up duplicate movement detection
+9. **(Medium)** Unify login error responses to prevent user enumeration
+10. **(Medium)** Write audit log entries for movement workflow transitions
