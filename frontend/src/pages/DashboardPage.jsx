@@ -1,63 +1,383 @@
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import Spinner from '@/components/Spinner';
+import Alert from '@/components/Alert';
+import StatsCard from '@/components/dashboard/StatsCard';
+import DashboardFilters from '@/components/dashboard/DashboardFilters';
+import StockBarChart from '@/components/dashboard/StockBarChart';
+import MovementLineChart from '@/components/dashboard/MovementLineChart';
+import {
+  getStockOverview,
+  getMovementReport,
+  getMovementRequestSummary,
+  getStockChartData,
+  getMovementTrends,
+  getLocations,
+  getGoods,
+  exportStockCsv,
+  exportMovementsCsv,
+} from '@/services/dashboardService';
 
-const STAT_CARDS = [
-  { label: 'Total Assets', value: '—', color: 'bg-blue-50 text-blue-700', icon: '◫' },
-  { label: 'Active Assets', value: '—', color: 'bg-green-50 text-green-700', icon: '✓' },
-  { label: 'Under Maintenance', value: '—', color: 'bg-yellow-50 text-yellow-700', icon: '⚙' },
-  { label: 'Retired Assets', value: '—', color: 'bg-red-50 text-red-700', icon: '✕' },
-];
+const TYPE_BADGE = {
+  in: 'bg-green-100 text-green-700',
+  out: 'bg-red-100 text-red-700',
+  transfer: 'bg-blue-100 text-blue-700',
+};
+
+const STATUS_BADGE = {
+  completed: 'bg-green-100 text-green-700',
+  pending: 'bg-yellow-100 text-yellow-700',
+  cancelled: 'bg-gray-100 text-gray-500',
+  approved: 'bg-green-100 text-green-700',
+  rejected: 'bg-red-100 text-red-700',
+  ok: 'bg-green-100 text-green-700',
+  low: 'bg-yellow-100 text-yellow-700',
+  out_of_stock: 'bg-red-100 text-red-700',
+};
+
+function Badge({ value, map }) {
+  const cls = map[value] || 'bg-gray-100 text-gray-600';
+  return (
+    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${cls}`}>
+      {value?.replace(/_/g, ' ')}
+    </span>
+  );
+}
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const [filters, setFilters] = useState({});
+  const [locations, setLocations] = useState([]);
+  const [goods, setGoods] = useState([]);
+
+  const [stockOverview, setStockOverview] = useState(null);
+  const [movementReport, setMovementReport] = useState(null);
+  const [requestSummary, setRequestSummary] = useState(null);
+  const [stockChartData, setStockChartData] = useState([]);
+  const [movementTrends, setMovementTrends] = useState([]);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [exporting, setExporting] = useState(null);
+
+  // Load filter options once
+  useEffect(() => {
+    Promise.all([getLocations(), getGoods()])
+      .then(([locs, gs]) => {
+        setLocations(locs);
+        setGoods(gs);
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [overview, movements, requests, stockChart, trends] = await Promise.all([
+        getStockOverview(filters),
+        getMovementReport(filters),
+        getMovementRequestSummary(filters),
+        getStockChartData(filters),
+        getMovementTrends(filters),
+      ]);
+      setStockOverview(overview);
+      setMovementReport(movements);
+      setRequestSummary(requests);
+      setStockChartData(stockChart);
+      setMovementTrends(trends);
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Failed to load dashboard data.');
+    } finally {
+      setLoading(false);
+    }
+  }, [filters]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const handleExport = async (type) => {
+    setExporting(type);
+    try {
+      if (type === 'stock') await exportStockCsv(filters);
+      else await exportMovementsCsv(filters);
+    } catch {
+      setError('Export failed. Please try again.');
+    } finally {
+      setExporting(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
-        <p className="mt-1 text-sm text-gray-500">
-          Welcome back, <span className="font-medium text-gray-700">{user?.name}</span>. Here&rsquo;s
-          an overview of your assets.
-        </p>
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
+          <p className="mt-1 text-sm text-gray-500">
+            Welcome back,{' '}
+            <span className="font-medium text-gray-700">{user?.name}</span>. Here&rsquo;s
+            your stock and movement overview.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            className="btn btn-secondary text-sm"
+            onClick={() => handleExport('stock')}
+            disabled={exporting === 'stock'}
+          >
+            {exporting === 'stock' ? 'Exporting…' : '↓ Stock CSV'}
+          </button>
+          <button
+            className="btn btn-secondary text-sm"
+            onClick={() => handleExport('movements')}
+            disabled={exporting === 'movements'}
+          >
+            {exporting === 'movements' ? 'Exporting…' : '↓ Movements CSV'}
+          </button>
+        </div>
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {STAT_CARDS.map(({ label, value, color, icon }) => (
-          <div key={label} className="card p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-500">{label}</p>
-                <p className="mt-1 text-3xl font-bold text-gray-900">{value}</p>
-              </div>
-              <div className={`flex h-11 w-11 items-center justify-center rounded-lg text-xl ${color}`}>
-                {icon}
-              </div>
+      {/* Filters */}
+      <DashboardFilters
+        filters={filters}
+        onChange={setFilters}
+        locations={locations}
+        goods={goods}
+      />
+
+      {error && <Alert type="error" message={error} onDismiss={() => setError(null)} />}
+
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <Spinner size="lg" />
+        </div>
+      ) : (
+        <>
+          {/* ── Stock Overview ── */}
+          <section>
+            <h3 className="mb-3 text-base font-semibold text-gray-800">Stock Overview</h3>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatsCard
+                label="Total Items"
+                value={stockOverview?.summary.totalItems ?? 0}
+                icon="◫"
+                colorClass="bg-blue-50 text-blue-700"
+              />
+              <StatsCard
+                label="Total Quantity"
+                value={stockOverview?.summary.totalQuantity?.toLocaleString() ?? 0}
+                icon="⊡"
+                colorClass="bg-indigo-50 text-indigo-700"
+              />
+              <StatsCard
+                label="Low Stock Items"
+                value={stockOverview?.summary.lowStockItems ?? 0}
+                icon="⚠"
+                colorClass="bg-yellow-50 text-yellow-700"
+              />
+              <StatsCard
+                label="Out of Stock"
+                value={stockOverview?.summary.outOfStockItems ?? 0}
+                icon="✕"
+                colorClass="bg-red-50 text-red-700"
+              />
+            </div>
+          </section>
+
+          {/* ── Charts ── */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="card p-5">
+              <h3 className="mb-4 text-base font-semibold text-gray-900">Stock by Good (Bar)</h3>
+              <StockBarChart data={stockChartData} />
+            </div>
+            <div className="card p-5">
+              <h3 className="mb-4 text-base font-semibold text-gray-900">Movement Trends (Line)</h3>
+              <MovementLineChart data={movementTrends} />
             </div>
           </div>
-        ))}
-      </div>
 
-      {/* Placeholder content */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="card p-5">
-          <h3 className="mb-4 text-base font-semibold text-gray-900">Recent Activity</h3>
-          <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-            <span className="text-4xl">◈</span>
-            <p className="mt-3 text-sm">No recent activity yet.</p>
-            <p className="text-xs">Activity will appear here once modules are connected.</p>
-          </div>
-        </div>
+          {/* ── Movement Request Summary ── */}
+          <section>
+            <h3 className="mb-3 text-base font-semibold text-gray-800">Movement Request Summary</h3>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatsCard
+                label="Total Requests"
+                value={requestSummary?.summary.total ?? 0}
+                icon="◈"
+                colorClass="bg-gray-100 text-gray-700"
+              />
+              <StatsCard
+                label="Pending"
+                value={requestSummary?.summary.pending ?? 0}
+                icon="◷"
+                colorClass="bg-yellow-50 text-yellow-700"
+              />
+              <StatsCard
+                label="Approved"
+                value={requestSummary?.summary.approved ?? 0}
+                icon="✓"
+                colorClass="bg-green-50 text-green-700"
+              />
+              <StatsCard
+                label="Rejected"
+                value={requestSummary?.summary.rejected ?? 0}
+                icon="✕"
+                colorClass="bg-red-50 text-red-700"
+              />
+            </div>
 
-        <div className="card p-5">
-          <h3 className="mb-4 text-base font-semibold text-gray-900">Asset Distribution</h3>
-          <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-            <span className="text-4xl">◑</span>
-            <p className="mt-3 text-sm">No data available.</p>
-            <p className="text-xs">Charts will render once asset data is available.</p>
-          </div>
-        </div>
-      </div>
+            {requestSummary?.requests?.length > 0 && (
+              <div className="card mt-4 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        {['Date', 'Type', 'Good', 'From', 'To', 'Qty', 'Status'].map((h) => (
+                          <th
+                            key={h}
+                            className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500"
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {requestSummary.requests.map((r) => (
+                        <tr key={r.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 text-gray-600">{r.date}</td>
+                          <td className="px-4 py-3">
+                            <Badge value={r.type} map={TYPE_BADGE} />
+                          </td>
+                          <td className="px-4 py-3 font-medium text-gray-800">{r.good?.name}</td>
+                          <td className="px-4 py-3 text-gray-500">{r.fromLocation?.name || '—'}</td>
+                          <td className="px-4 py-3 text-gray-500">{r.toLocation?.name || '—'}</td>
+                          <td className="px-4 py-3 font-semibold">{r.quantity.toLocaleString()}</td>
+                          <td className="px-4 py-3">
+                            <Badge value={r.status} map={STATUS_BADGE} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* ── Movement Report ── */}
+          <section>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-base font-semibold text-gray-800">
+                Movement Report
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  (In: {movementReport?.summary.totalIn?.toLocaleString() ?? 0} | Out:{' '}
+                  {movementReport?.summary.totalOut?.toLocaleString() ?? 0} | Transfer:{' '}
+                  {movementReport?.summary.totalTransfer?.toLocaleString() ?? 0})
+                </span>
+              </h3>
+            </div>
+
+            <div className="card overflow-hidden">
+              {movementReport?.movements?.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        {['Date', 'Type', 'Good', 'From', 'To', 'Qty', 'Status', 'Notes'].map(
+                          (h) => (
+                            <th
+                              key={h}
+                              className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500"
+                            >
+                              {h}
+                            </th>
+                          )
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {movementReport.movements.map((m) => (
+                        <tr key={m.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 text-gray-600">{m.date}</td>
+                          <td className="px-4 py-3">
+                            <Badge value={m.type} map={TYPE_BADGE} />
+                          </td>
+                          <td className="px-4 py-3 font-medium text-gray-800">{m.good?.name}</td>
+                          <td className="px-4 py-3 text-gray-500">{m.fromLocation?.name || '—'}</td>
+                          <td className="px-4 py-3 text-gray-500">{m.toLocation?.name || '—'}</td>
+                          <td className="px-4 py-3 font-semibold">{m.quantity.toLocaleString()}</td>
+                          <td className="px-4 py-3">
+                            <Badge value={m.status} map={STATUS_BADGE} />
+                          </td>
+                          <td className="px-4 py-3 text-gray-400 max-w-[200px] truncate">
+                            {m.notes || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                  <span className="text-4xl">◈</span>
+                  <p className="mt-3 text-sm">No movements found for the selected filters.</p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* ── Stock Table ── */}
+          <section>
+            <h3 className="mb-3 text-base font-semibold text-gray-800">Stock Details</h3>
+            <div className="card overflow-hidden">
+              {stockOverview?.stocks?.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        {['Location', 'Good', 'SKU', 'Category', 'Unit', 'Qty', 'Min Qty', 'Status'].map(
+                          (h) => (
+                            <th
+                              key={h}
+                              className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500"
+                            >
+                              {h}
+                            </th>
+                          )
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {stockOverview.stocks.map((s) => (
+                        <tr key={s.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 font-medium text-gray-800">{s.location?.name}</td>
+                          <td className="px-4 py-3 text-gray-700">{s.good?.name}</td>
+                          <td className="px-4 py-3 font-mono text-xs text-gray-500">{s.good?.sku}</td>
+                          <td className="px-4 py-3 text-gray-500">{s.good?.category || '—'}</td>
+                          <td className="px-4 py-3 text-gray-500">{s.good?.unit}</td>
+                          <td className="px-4 py-3 font-semibold">{s.quantity.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-gray-500">{s.minQuantity.toLocaleString()}</td>
+                          <td className="px-4 py-3">
+                            <Badge value={s.status} map={STATUS_BADGE} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                  <span className="text-4xl">◫</span>
+                  <p className="mt-3 text-sm">No stock data available.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }

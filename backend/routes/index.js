@@ -9,6 +9,7 @@ const stockAdjustmentRoutes = require('./stockAdjustmentRoutes');
 const movementRoutes = require('./movementRoutes');
 const referenceDataRoutes = require('./referenceDataRoutes');
 const auditLogRoutes = require('./auditLogRoutes');
+const dashboardRoutes = require('./dashboardRoutes');
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use('/stock-adjustments', stockAdjustmentRoutes);
 router.use('/movements', movementRoutes);
 router.use('/reference-data', referenceDataRoutes);
 router.use('/audit-logs', auditLogRoutes);
+router.use('/dashboard', dashboardRoutes);
 
 module.exports = router;
