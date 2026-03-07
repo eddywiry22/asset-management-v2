@@ -24,6 +24,9 @@ db.StockAdjustment = require('./StockAdjustment')(sequelize, Sequelize.DataTypes
 db.AuditLog = require('./AuditLog')(sequelize, Sequelize.DataTypes);
 db.LocationLog = require('./LocationLog')(sequelize, Sequelize.DataTypes);
 db.MovementRequest = require('./MovementRequest')(sequelize, Sequelize.DataTypes);
+db.Item = require('./Item')(sequelize, Sequelize.DataTypes);
+db.MovementHeader = require('./MovementHeader')(sequelize, Sequelize.DataTypes);
+db.MovementDetail = require('./MovementDetail')(sequelize, Sequelize.DataTypes);
 
 // Define associations
 Object.values(db).forEach((model) => {

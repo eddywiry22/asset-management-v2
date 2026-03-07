@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { to: '/vendors',          label: 'Vendors',           icon: '⊟', module: 'vendors'    },
   { to: '/stock',            label: 'Stock',             icon: '▣', module: 'stock'      },
   { to: '/stock-adjustments',label: 'Stock Adjustments', icon: '±', module: 'stock'      },
+  { to: '/movements',        label: 'Movements',         icon: '↕', module: 'movements'  },
   { to: '/reports',          label: 'Reports',           icon: '◈', module: 'reports'    },
 ];
 

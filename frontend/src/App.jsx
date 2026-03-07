@@ -11,6 +11,9 @@ import CategoriesPage from '@/pages/CategoriesPage';
 import VendorsPage from '@/pages/VendorsPage';
 import StockPage from '@/pages/StockPage';
 import StockAdjustmentsPage from '@/pages/StockAdjustmentsPage';
+import MovementsListPage from '@/pages/movements/MovementsListPage';
+import MovementNewPage from '@/pages/movements/MovementNewPage';
+import MovementDetailPage from '@/pages/movements/MovementDetailPage';
 import NotFoundPage from '@/pages/NotFoundPage';
 
 export default function App() {
@@ -34,6 +37,9 @@ export default function App() {
               <Route path="/vendors" element={<VendorsPage />} />
               <Route path="/stock" element={<StockPage />} />
               <Route path="/stock-adjustments" element={<StockAdjustmentsPage />} />
+              <Route path="/movements" element={<MovementsListPage />} />
+              <Route path="/movements/new" element={<MovementNewPage />} />
+              <Route path="/movements/:id" element={<MovementDetailPage />} />
             </Route>
           </Route>
 
