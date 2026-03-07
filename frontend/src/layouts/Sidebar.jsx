@@ -14,7 +14,7 @@ import { canAccessModule } from '@/utils/permissions';
  */
 const NAV_ITEMS = [
   { to: '/dashboard',  label: 'Dashboard',  icon: '▦', module: 'dashboard' },
-  { to: '/assets',     label: 'Assets',     icon: '◫', module: 'assets'    },
+  { to: '/goods',      label: 'Goods',      icon: '◫', module: 'assets'    },
   { to: '/categories', label: 'Categories', icon: '⊞', module: 'categories'},
   { to: '/reports',    label: 'Reports',    icon: '◈', module: 'reports'   },
 ];
