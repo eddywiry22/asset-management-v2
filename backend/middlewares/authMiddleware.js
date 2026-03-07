@@ -18,7 +18,10 @@ const requireAuth = async (req, res, next) => {
     const decoded = verifyToken(token);
 
     const user = await User.findByPk(decoded.id);
-    if (!user || !user.isActive) {
+    // BUG-13: check BOTH isActive (boolean) and status (ENUM) so the two fields
+    // cannot desync and allow a deactivated user through. Either field being
+    // inactive is sufficient to reject — fail-closed.
+    if (!user || !user.isActive || user.status !== 'ACTIVE') {
       return unauthorized(res, 'User not found or inactive');
     }
 

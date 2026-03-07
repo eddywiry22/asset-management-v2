@@ -80,9 +80,13 @@ router.post(
 );
 
 // POST /api/movements/:id/finalize – finalize and update stock
+// BUG-07: warehouse_head removed — they perform step 2 (head approval) only.
+// Allowing them to also finalize (step 4) collapses the 4-step workflow to 2
+// steps and defeats the purpose of the destination-approval stage.
+// Only warehouse_operator (the originating party) or admin/manager may finalize.
 router.post(
   '/:id/finalize',
-  authorize('admin', 'manager', 'warehouse_head'),
+  authorize('admin', 'manager', 'warehouse_operator'),
   movementController.finalize
 );
 
@@ -92,6 +96,14 @@ router.post(
   authorize('admin', 'manager', 'warehouse_head', 'destination_operator'),
   validate(rejectSchema),
   movementController.reject
+);
+
+// POST /api/movements/:id/cancel – warehouse_operator withdraws their own pending request
+// BUG-08: provides a cancellation path so operators can correct mistakes without admin help.
+router.post(
+  '/:id/cancel',
+  authorize('admin', 'manager', 'warehouse_operator'),
+  movementController.cancel
 );
 
 module.exports = router;

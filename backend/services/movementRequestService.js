@@ -4,19 +4,25 @@ const AppError = require('../utils/AppError');
 
 /**
  * Build a WHERE clause for "requests requiring this user's action".
+ *
+ * MovementRequest.status ENUM: PENDING, APPROVED, IN_TRANSIT, COMPLETED, CANCELLED, REJECTED
  */
 function requiresActionWhere(user) {
   if (user.role === 'warehouse_head') {
-    return { status: 'PENDING_HEAD_APPROVAL' };
+    // Head approves requests that are still pending initial approval
+    return { status: 'PENDING' };
   }
-  if (user.role === 'operator') {
+  if (user.role === 'destination_operator') {
+    // Destination operator approves requests targeting their location that are
+    // head-approved (IN_TRANSIT = awaiting destination confirmation in this simplified model)
     return {
-      status: 'PENDING_DESTINATION_APPROVAL',
-      destination_location_id: user.location_id,
+      status: 'IN_TRANSIT',
+      toLocationId: user.locationId,
     };
   }
-  if (user.role === 'requester') {
-    return { status: 'REJECTED', requester_id: user.id };
+  if (user.role === 'warehouse_operator') {
+    // Operators see rejected requests they submitted so they can act on feedback
+    return { status: 'REJECTED', requestedBy: user.id };
   }
   return null; // other roles have no action-required items
 }
@@ -46,12 +52,12 @@ async function getAll(filters, user) {
     else return { rows: [], count: 0 }; // role has no action items
   } else {
     // Non-admin roles can only see their own requests or those relevant to them
-    if (user.role === 'requester') {
-      where.requester_id = user.id;
-    } else if (user.role === 'operator') {
+    if (user.role === 'warehouse_operator') {
+      where.requestedBy = user.id;
+    } else if (user.role === 'destination_operator') {
       where[Op.or] = [
-        { destination_location_id: user.location_id },
-        { requester_id: user.id },
+        { toLocationId: user.locationId },
+        { requestedBy: user.id },
       ];
     }
     // warehouse_head, admin, manager see all
@@ -67,7 +73,6 @@ async function getAll(filters, user) {
     where,
     include: [
       { model: User, as: 'requester', attributes: ['id', 'name', 'email', 'role'] },
-      { model: User, as: 'reviewer', attributes: ['id', 'name', 'email', 'role'] },
     ],
     order: [['createdAt', 'DESC']],
     limit: Number(limit),
@@ -76,21 +81,32 @@ async function getAll(filters, user) {
 }
 
 /**
- * Create a new movement request (requester role).
+ * Create a new movement request (warehouse_operator role).
+ *
+ * BUG-02 fix: use the correct Sequelize camelCase attribute names that match
+ * the MovementRequest model definition (fromLocationId, toLocationId, requestedBy)
+ * rather than the raw snake_case DB column names that Sequelize silently ignores.
  */
 async function create(data, user) {
   return MovementRequest.create({
-    requester_id: user.id,
-    asset_description: data.asset_description,
-    source_location_id: data.source_location_id,
-    destination_location_id: data.destination_location_id,
-    notes: data.notes || null,
-    status: 'PENDING_HEAD_APPROVAL',
+    requestedBy: user.id,
+    fromLocationId: data.fromLocationId,
+    toLocationId: data.toLocationId,
+    status: 'PENDING',
   });
 }
 
 /**
  * Approve or reject a movement request.
+ *
+ * BUG-10 fix: use the correct status ENUM values defined on the MovementRequest
+ * model (PENDING → IN_TRANSIT → APPROVED) instead of the MovementHeader workflow
+ * statuses (PENDING_HEAD_APPROVAL, PENDING_DESTINATION_APPROVAL) which are NOT
+ * valid for this model and cause runtime ENUM constraint failures.
+ *
+ * Role mapping:
+ *   warehouse_head    approves PENDING        → IN_TRANSIT
+ *   destination_operator approves IN_TRANSIT  → APPROVED
  */
 async function updateStatus(id, action, reviewerUser, rejectionReason) {
   const request = await MovementRequest.findByPk(id);
@@ -99,20 +115,19 @@ async function updateStatus(id, action, reviewerUser, rejectionReason) {
   const { role } = reviewerUser;
 
   if (action === 'approve') {
-    if (role === 'warehouse_head' && request.status === 'PENDING_HEAD_APPROVAL') {
-      request.status = 'PENDING_DESTINATION_APPROVAL';
-    } else if (role === 'operator' && request.status === 'PENDING_DESTINATION_APPROVAL') {
+    if (role === 'warehouse_head' && request.status === 'PENDING') {
+      request.status = 'IN_TRANSIT';
+    } else if (role === 'destination_operator' && request.status === 'IN_TRANSIT') {
       request.status = 'APPROVED';
     } else {
       throw new AppError('You cannot approve this request in its current state', 403);
     }
   } else if (action === 'reject') {
     if (
-      (role === 'warehouse_head' && request.status === 'PENDING_HEAD_APPROVAL') ||
-      (role === 'operator' && request.status === 'PENDING_DESTINATION_APPROVAL')
+      (role === 'warehouse_head' && request.status === 'PENDING') ||
+      (role === 'destination_operator' && request.status === 'IN_TRANSIT')
     ) {
       request.status = 'REJECTED';
-      request.rejection_reason = rejectionReason || null;
     } else {
       throw new AppError('You cannot reject this request in its current state', 403);
     }
@@ -120,7 +135,6 @@ async function updateStatus(id, action, reviewerUser, rejectionReason) {
     throw new AppError('Invalid action', 400);
   }
 
-  request.reviewed_by = reviewerUser.id;
   return request.save();
 }
 

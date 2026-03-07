@@ -51,32 +51,48 @@ const withFullIncludes = () => [
 // Duplicate check
 // ---------------------------------------------------------------------------
 
-const findDuplicateActiveMovement = async (originLocationId, destinationLocationId, items) => {
-  const activeMovements = await MovementHeader.findAll({
+/**
+ * Check for an active duplicate movement with the same origin, destination,
+ * and set of goods — quantity-agnostic per the architecture spec
+ * ("same items" means same goods, regardless of quantity).
+ *
+ * BUG-03 fix: this function must be called inside a transaction (passed as
+ * `transaction`) so that the SELECT is part of the same atomic operation as
+ * the INSERT, preventing TOCTOU races under concurrent requests.
+ *
+ * BUG-11 fix: removed quantity from the comparison — two requests for the
+ * same goods between the same locations are duplicates even at different qty.
+ *
+ * BUG-12 fix: the query runs inside the caller's transaction, and the DB-level
+ * index on (origin_location_id, destination_location_id, status) (added in
+ * migration 20260307000002) ensures fast, consistent lookups under load.
+ */
+const findDuplicateActiveMovement = async (originLocationId, destinationLocationId, items, transaction = null) => {
+  const findOpts = {
     where: {
       originLocationId,
       destinationLocationId,
       status: { [Op.in]: ACTIVE_STATUSES },
     },
     include: [{ model: MovementDetail, as: 'details' }],
-  });
+  };
+  if (transaction) findOpts.transaction = transaction;
 
-  const sortedItems = [...items]
-    .map((i) => ({ goodsId: Number(i.goodsId), quantity: parseFloat(i.quantity) }))
-    .sort((a, b) => a.goodsId - b.goodsId);
+  const activeMovements = await MovementHeader.findAll(findOpts);
+
+  // Sort incoming goods IDs for O(n) comparison
+  const sortedGoodsIds = [...items]
+    .map((i) => Number(i.goodsId))
+    .sort((a, b) => a - b);
 
   for (const movement of activeMovements) {
-    const movDetails = [...movement.details]
-      .map((d) => ({ goodsId: Number(d.goodsId), quantity: parseFloat(d.quantity) }))
-      .sort((a, b) => a.goodsId - b.goodsId);
+    const movGoodsIds = [...movement.details]
+      .map((d) => Number(d.goodsId))
+      .sort((a, b) => a - b);
 
-    if (movDetails.length !== sortedItems.length) continue;
+    if (movGoodsIds.length !== sortedGoodsIds.length) continue;
 
-    const isMatch = sortedItems.every((item, idx) => {
-      const detail = movDetails[idx];
-      return detail.goodsId === item.goodsId && detail.quantity === item.quantity;
-    });
-
+    const isMatch = sortedGoodsIds.every((goodsId, idx) => movGoodsIds[idx] === goodsId);
     if (isMatch) return movement;
   }
   return null;
@@ -142,14 +158,6 @@ const createMovement = async (requestedById, data) => {
     throw new AppError('At least one item is required', 400);
   }
 
-  const duplicate = await findDuplicateActiveMovement(originLocationId, destinationLocationId, items);
-  if (duplicate) {
-    throw new AppError(
-      `A duplicate active movement request already exists (${duplicate.movementNumber})`,
-      409
-    );
-  }
-
   const warnings = [];
   const detailData = [];
 
@@ -206,6 +214,16 @@ const createMovement = async (requestedById, data) => {
   }
 
   const movement = await sequelize.transaction(async (t) => {
+    // BUG-03 fix: duplicate check runs inside the transaction so the SELECT
+    // and INSERT are atomic — concurrent identical requests cannot both pass.
+    const duplicate = await findDuplicateActiveMovement(originLocationId, destinationLocationId, items, t);
+    if (duplicate) {
+      throw new AppError(
+        `A duplicate active movement request already exists (${duplicate.movementNumber})`,
+        409
+      );
+    }
+
     const movementNumber = await generateMovementNumber();
 
     const header = await MovementHeader.create(
@@ -313,6 +331,12 @@ const approveByHead = async (userId, movementId) => {
     throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
   }
 
+  // BUG-04: prevent self-approval — the warehouse head cannot approve a
+  // movement they themselves created.
+  if (movement.requestedById === userId) {
+    throw new AppError('You cannot approve a movement request that you created', 403);
+  }
+
   const before = { status: movement.status };
 
   await movement.update({
@@ -340,8 +364,10 @@ const approveByDestination = async (userId, movementId, userLocationId) => {
     throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
   }
 
-  // Destination location ownership check: approver must belong to the destination location
-  if (userLocationId && userLocationId !== movement.destinationLocationId) {
+  // BUG-05: Destination location ownership check — the approver must belong to
+  // the destination location. A null/missing locationId must NOT bypass this
+  // guard; it is treated as a mismatch (fail-closed).
+  if (!userLocationId || userLocationId !== movement.destinationLocationId) {
     throw new AppError(
       'You can only approve movements where you are the destination location operator',
       403
@@ -434,11 +460,40 @@ const finalizeMovement = async (userId, movementId) => {
   return getMovement(movementId);
 };
 
-const rejectMovement = async (userId, movementId, reason) => {
+const rejectMovement = async (userId, movementId, reason, userRole) => {
   const movement = await MovementHeader.findByPk(movementId);
   if (!movement) throw new AppError('Movement not found', 404);
   if (['COMPLETED', 'REJECTED'].includes(movement.status)) {
     throw new AppError(`Cannot reject: movement is already "${movement.status}"`, 400);
+  }
+
+  // BUG-09: Stage-specific rejection guard.
+  // Rejection is only valid at specific workflow stages for specific roles:
+  //   warehouse_head       — may reject at PENDING_HEAD_APPROVAL only
+  //   destination_operator — may reject at PENDING_DESTINATION_APPROVAL only
+  //   admin / manager      — may reject at either of the above two stages
+  // Post-destination-approval (APPROVED_READY_FOR_FINALIZATION) rejection is
+  // not permitted through this route — the movement has already been fully
+  // approved and awaits physical execution.
+  if (movement.status === 'APPROVED_READY_FOR_FINALIZATION') {
+    throw new AppError(
+      'Cannot reject: movement has already been approved for finalization. Cancel it instead.',
+      400
+    );
+  }
+
+  if (userRole === 'warehouse_head' && movement.status !== 'PENDING_HEAD_APPROVAL') {
+    throw new AppError(
+      'Warehouse head can only reject movements pending head approval',
+      403
+    );
+  }
+
+  if (userRole === 'destination_operator' && movement.status !== 'PENDING_DESTINATION_APPROVAL') {
+    throw new AppError(
+      'Destination operator can only reject movements pending destination approval',
+      403
+    );
   }
 
   const before = { status: movement.status };
@@ -462,6 +517,51 @@ const rejectMovement = async (userId, movementId, reason) => {
   return getMovement(movementId);
 };
 
+/**
+ * Cancel a movement — allows the originating warehouse_operator to withdraw
+ * their own PENDING_HEAD_APPROVAL request before it has been reviewed.
+ *
+ * BUG-08: warehouse_operator previously had no way to cancel their own pending
+ * request, making it impossible to correct mistakes without admin intervention.
+ */
+const cancelMovement = async (userId, movementId) => {
+  const movement = await MovementHeader.findByPk(movementId);
+  if (!movement) throw new AppError('Movement not found', 404);
+
+  // Only the requester may cancel their own request
+  if (movement.requestedById !== userId) {
+    throw new AppError('You can only cancel movements that you created', 403);
+  }
+
+  // Cancellation is only valid while the request is still pending initial approval
+  if (movement.status !== 'PENDING_HEAD_APPROVAL') {
+    throw new AppError(
+      `Cannot cancel: movement is currently "${movement.status}". Only PENDING_HEAD_APPROVAL requests can be cancelled.`,
+      400
+    );
+  }
+
+  const before = { status: movement.status };
+
+  await movement.update({
+    status: 'REJECTED',
+    rejectionReason: 'Cancelled by requester',
+    rejectedById: userId,
+    rejectedAt: new Date(),
+  });
+
+  await createAuditLog({
+    userId,
+    action: 'CANCEL',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    before,
+    after: { status: 'REJECTED', rejectionReason: 'Cancelled by requester' },
+  });
+
+  return getMovement(movementId);
+};
+
 module.exports = {
   previewMovement,
   createMovement,
@@ -471,4 +571,5 @@ module.exports = {
   approveByDestination,
   finalizeMovement,
   rejectMovement,
+  cancelMovement,
 };

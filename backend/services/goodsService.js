@@ -23,6 +23,11 @@ const writeAuditLog = async (actor, action, entityId, before = null, after = nul
 
 /**
  * Return all goods records with optional filters.
+ *
+ * BUG-15: Goods now has a defaultScope that restricts to ACTIVE. When a caller
+ * explicitly requests a specific status (e.g. admin listing INACTIVE goods) we
+ * use unscoped() to bypass the default and apply the requested filter directly.
+ *
  * @param {{ status?: string, category?: string }} filters
  */
 const listGoods = async (filters = {}) => {
@@ -30,7 +35,11 @@ const listGoods = async (filters = {}) => {
   if (filters.status) where.status = filters.status;
   if (filters.category) where.category = filters.category;
 
-  return Goods.findAll({ where, order: [['createdAt', 'DESC']] });
+  // Use unscoped() when a specific status is requested so admins can still
+  // retrieve INACTIVE goods. Without a status filter the defaultScope applies,
+  // returning only ACTIVE goods.
+  const query = filters.status ? Goods.unscoped() : Goods;
+  return query.findAll({ where, order: [['createdAt', 'DESC']] });
 };
 
 /**
@@ -49,9 +58,13 @@ const getGoodsById = async (id) => {
  * @param {object} actor - req.user
  */
 const createGoods = async (data, actor) => {
-  const existing = await Goods.findOne({ where: { product_id: data.product_id } });
+  // BUG-16: use the Sequelize camelCase attribute name (productId) instead of
+  // the raw DB column name (product_id). Querying with the raw column name is
+  // silently ignored by Sequelize, so the duplicate check never fires and two
+  // goods records with the same productId can be created concurrently.
+  const existing = await Goods.unscoped().findOne({ where: { productId: data.productId } });
   if (existing) {
-    throw new AppError(`product_id "${data.product_id}" is already in use`, 409);
+    throw new AppError(`productId "${data.productId}" is already in use`, 409);
   }
 
   const goods = await Goods.create(data);

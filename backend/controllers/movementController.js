@@ -73,11 +73,28 @@ const finalize = async (req, res, next) => {
 
 const reject = async (req, res, next) => {
   try {
-    const movement = await movementService.rejectMovement(req.user.id, req.params.id, req.body.reason);
+    // BUG-09: pass the caller's role so the service can enforce stage-specific
+    // rejection guards (e.g. only at PENDING_HEAD_APPROVAL / PENDING_DESTINATION_APPROVAL).
+    const movement = await movementService.rejectMovement(
+      req.user.id,
+      req.params.id,
+      req.body.reason,
+      req.user.role
+    );
     return success(res, movement, 'Movement rejected');
   } catch (err) {
     return next(err);
   }
 };
 
-module.exports = { preview, create, list, getOne, approveHead, approveDest, finalize, reject };
+// BUG-08: cancel — warehouse_operator withdraws their own pending request
+const cancel = async (req, res, next) => {
+  try {
+    const movement = await movementService.cancelMovement(req.user.id, req.params.id);
+    return success(res, movement, 'Movement cancelled');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { preview, create, list, getOne, approveHead, approveDest, finalize, reject, cancel };

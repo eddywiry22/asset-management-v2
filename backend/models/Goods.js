@@ -60,6 +60,17 @@ module.exports = (sequelize, DataTypes) => {
       timestamps: true,
       createdAt: 'created_at',
       updatedAt: 'updated_at',
+      // BUG-15: defaultScope ensures that all plain Goods.findAll() / findOne()
+      // calls exclude INACTIVE goods automatically, matching the business rule
+      // that inactive goods must not be selectable in movement requests.
+      // Use Goods.unscoped() or Goods.scope('withInactive') when admin access
+      // to all goods is explicitly required.
+      defaultScope: {
+        where: { status: 'ACTIVE' },
+      },
+      scopes: {
+        withInactive: {},
+      },
     }
   );
 

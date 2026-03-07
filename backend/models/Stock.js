@@ -18,7 +18,7 @@ module.exports = (sequelize, DataTypes) => {
         field: 'location_id',
       },
       quantity: {
-        type: DataTypes.INTEGER.UNSIGNED,
+        type: DataTypes.DECIMAL(15, 4),
         allowNull: false,
         defaultValue: 0,
       },

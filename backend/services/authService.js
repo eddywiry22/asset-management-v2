@@ -26,8 +26,10 @@ const login = async (email, password) => {
 
   const isMatch = await user.verifyPassword(password);
 
-  // Check inactive AFTER password verification – unified response prevents enumeration
-  if (!isMatch || !user.isActive) {
+  // BUG-13: check BOTH isActive (boolean) and status (ENUM) — the two fields can
+  // desync (e.g. admin sets status=INACTIVE but forgets to flip isActive). Either
+  // flag being inactive must block login. Unified 401 response prevents enumeration.
+  if (!isMatch || !user.isActive || user.status !== 'ACTIVE') {
     throw new AppError('Invalid email or password', 401);
   }
 
