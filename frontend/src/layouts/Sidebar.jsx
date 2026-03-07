@@ -3,12 +3,14 @@ import { useAuth } from '@/contexts/AuthContext';
 import { canAccessModule } from '@/utils/permissions';
 
 const NAV_ITEMS = [
-  { to: '/dashboard',  label: 'Dashboard',  icon: '▦', module: 'dashboard' },
-  { to: '/goods',      label: 'Goods',      icon: '◫', module: 'assets'    },
-  { to: '/locations',  label: 'Locations',  icon: '⊙', module: 'locations' },
-  { to: '/categories', label: 'Categories', icon: '⊞', module: 'categories'},
-  { to: '/vendors',    label: 'Vendors',    icon: '⊟', module: 'vendors'   },
-  { to: '/reports',    label: 'Reports',    icon: '◈', module: 'reports'   },
+  { to: '/dashboard',        label: 'Dashboard',         icon: '▦', module: 'dashboard'  },
+  { to: '/goods',            label: 'Goods',             icon: '◫', module: 'assets'     },
+  { to: '/locations',        label: 'Locations',         icon: '⊙', module: 'locations'  },
+  { to: '/categories',       label: 'Categories',        icon: '⊞', module: 'categories' },
+  { to: '/vendors',          label: 'Vendors',           icon: '⊟', module: 'vendors'    },
+  { to: '/stock',            label: 'Stock',             icon: '▣', module: 'stock'      },
+  { to: '/stock-adjustments',label: 'Stock Adjustments', icon: '±', module: 'stock'      },
+  { to: '/reports',          label: 'Reports',           icon: '◈', module: 'reports'    },
 ];
 
 const ADMIN_NAV_ITEMS = [

@@ -20,6 +20,7 @@ db.User = require('./User')(sequelize, Sequelize.DataTypes);
 db.Permission = require('./Permission')(sequelize, Sequelize.DataTypes);
 db.Goods = require('./Goods')(sequelize, Sequelize.DataTypes);
 db.Stock = require('./Stock')(sequelize, Sequelize.DataTypes);
+db.StockAdjustment = require('./StockAdjustment')(sequelize, Sequelize.DataTypes);
 db.AuditLog = require('./AuditLog')(sequelize, Sequelize.DataTypes);
 db.LocationLog = require('./LocationLog')(sequelize, Sequelize.DataTypes);
 db.MovementRequest = require('./MovementRequest')(sequelize, Sequelize.DataTypes);
