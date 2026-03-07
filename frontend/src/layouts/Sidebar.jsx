@@ -3,10 +3,6 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: '▦' },
-  // Add more nav items here as modules are built:
-  // { to: '/assets', label: 'Assets', icon: '◫' },
-  // { to: '/categories', label: 'Categories', icon: '⊞' },
-  // { to: '/reports', label: 'Reports', icon: '◈' },
 ];
 
 const ADMIN_NAV_ITEMS = [
