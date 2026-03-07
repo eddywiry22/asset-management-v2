@@ -7,6 +7,8 @@ import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
 import GoodsPage from '@/pages/GoodsPage';
 import LocationsPage from '@/pages/LocationsPage';
+import CategoriesPage from '@/pages/CategoriesPage';
+import VendorsPage from '@/pages/VendorsPage';
 import NotFoundPage from '@/pages/NotFoundPage';
 
 export default function App() {
@@ -26,6 +28,8 @@ export default function App() {
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/goods" element={<GoodsPage />} />
               <Route path="/locations" element={<LocationsPage />} />
+              <Route path="/categories" element={<CategoriesPage />} />
+              <Route path="/vendors" element={<VendorsPage />} />
               {/* Add more protected routes here as modules are built */}
             </Route>
           </Route>

@@ -7,7 +7,7 @@ module.exports = (sequelize, DataTypes) => {
         autoIncrement: true,
         primaryKey: true,
       },
-      category: {
+      name: {
         type: DataTypes.STRING(100),
         allowNull: false,
         unique: true,
@@ -16,10 +16,15 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+      isActive: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+      },
     },
     {
       tableName: 'categories',
-      timestamps: false,
+      timestamps: true,
     }
   );
 

@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: '/goods',      label: 'Goods',      icon: '◫', module: 'assets'    },
   { to: '/locations',  label: 'Locations',  icon: '⊙', module: 'locations' },
   { to: '/categories', label: 'Categories', icon: '⊞', module: 'categories'},
+  { to: '/vendors',    label: 'Vendors',    icon: '⊟', module: 'vendors'   },
   { to: '/reports',    label: 'Reports',    icon: '◈', module: 'reports'   },
 ];
 

@@ -7,19 +7,36 @@ module.exports = (sequelize, DataTypes) => {
         autoIncrement: true,
         primaryKey: true,
       },
-      vendor: {
-        type: DataTypes.STRING(100),
+      name: {
+        type: DataTypes.STRING(150),
         allowNull: false,
         unique: true,
       },
-      description: {
+      contactPerson: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+      },
+      email: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+      },
+      phone: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+      },
+      address: {
         type: DataTypes.TEXT,
         allowNull: true,
+      },
+      isActive: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
       },
     },
     {
       tableName: 'vendors',
-      timestamps: false,
+      timestamps: true,
     }
   );
 
