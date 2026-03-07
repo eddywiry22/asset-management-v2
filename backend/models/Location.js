@@ -48,6 +48,9 @@ module.exports = (sequelize, DataTypes) => {
     Location.belongsTo(models.User, { foreignKey: 'createdBy', as: 'creator' });
     Location.hasMany(models.User, { foreignKey: 'locationId', as: 'users' });
     Location.hasMany(models.Stock, { foreignKey: 'locationId', as: 'stock' });
+    Location.hasMany(models.LocationLog, { foreignKey: 'locationId', as: 'logs' });
+    Location.hasMany(models.MovementRequest, { foreignKey: 'fromLocationId', as: 'outboundRequests' });
+    Location.hasMany(models.MovementRequest, { foreignKey: 'toLocationId', as: 'inboundRequests' });
   };
 
   return Location;

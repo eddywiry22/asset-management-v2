@@ -2,19 +2,10 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { canAccessModule } from '@/utils/permissions';
 
-/**
- * All navigation items.
- *
- * Each item carries a `module` key that maps directly to the permission matrix.
- * The sidebar filters items at render time using canAccessModule(role, module).
- *
- * Sections:
- *   main  – shown to every authenticated user who has access to that module
- *   admin – shown only in the Administration heading group (admin-tier modules)
- */
 const NAV_ITEMS = [
   { to: '/dashboard',  label: 'Dashboard',  icon: '▦', module: 'dashboard' },
   { to: '/goods',      label: 'Goods',      icon: '◫', module: 'assets'    },
+  { to: '/locations',  label: 'Locations',  icon: '⊙', module: 'locations' },
   { to: '/categories', label: 'Categories', icon: '⊞', module: 'categories'},
   { to: '/reports',    label: 'Reports',    icon: '◈', module: 'reports'   },
 ];
@@ -55,7 +46,6 @@ export default function Sidebar({ isOpen, onClose }) {
 
   return (
     <>
-      {/* Mobile overlay */}
       {isOpen && (
         <div
           className="fixed inset-0 z-20 bg-black/40 lg:hidden"
@@ -64,7 +54,6 @@ export default function Sidebar({ isOpen, onClose }) {
         />
       )}
 
-      {/* Sidebar panel */}
       <aside
         className={[
           'fixed inset-y-0 left-0 z-30 flex w-64 flex-col bg-gray-900 text-white transition-transform duration-300',
@@ -72,7 +61,6 @@ export default function Sidebar({ isOpen, onClose }) {
           isOpen ? 'translate-x-0' : '-translate-x-full',
         ].join(' ')}
       >
-        {/* Logo */}
         <div className="flex h-16 items-center gap-3 border-b border-gray-700 px-5">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary-600 text-base font-bold">
             A
@@ -80,16 +68,12 @@ export default function Sidebar({ isOpen, onClose }) {
           <span className="text-lg font-semibold tracking-tight">AssetMS</span>
         </div>
 
-        {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4">
           <ul className="space-y-1 px-3">
-            {/* Main navigation – filtered by role permissions */}
             {visibleMain.map(({ to, label, icon }) => (
               <NavItem key={to} to={to} label={label} icon={icon} onClose={onClose} />
             ))}
 
-            {/* Administration section – only rendered when the user has access to
-                at least one admin-tier module (e.g. users or settings) */}
             {visibleAdmin.length > 0 && (
               <>
                 <li className="pt-4 pb-1">
@@ -105,7 +89,6 @@ export default function Sidebar({ isOpen, onClose }) {
           </ul>
         </nav>
 
-        {/* User section */}
         <div className="border-t border-gray-700 p-4">
           <div className="mb-3 flex items-center gap-3">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-500 text-sm font-semibold uppercase">

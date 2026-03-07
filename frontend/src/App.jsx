@@ -6,6 +6,7 @@ import AuthLayout from '@/layouts/AuthLayout';
 import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
 import GoodsPage from '@/pages/GoodsPage';
+import LocationsPage from '@/pages/LocationsPage';
 import NotFoundPage from '@/pages/NotFoundPage';
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
               <Route index element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/goods" element={<GoodsPage />} />
+              <Route path="/locations" element={<LocationsPage />} />
               {/* Add more protected routes here as modules are built */}
             </Route>
           </Route>
