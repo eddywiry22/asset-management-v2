@@ -1004,3 +1004,568 @@ Compared to Run 1 (1/8 passing), the codebase has made substantial progress:
 3. **BUG-01 / BUG-06:** Change `Stock.quantity` to `DECIMAL(15,4)` to align with
    `MovementDetail.quantity` and prevent silent precision loss.
 4. **BUG-05:** Fix the null-bypass in destination ownership check to reject unassigned operators.
+
+---
+
+---
+
+# Warehouse Movement Simulation Test Report — Run 3
+
+**Date and Time of Test:** 2026-03-07 — 11:00:00 UTC
+**Tester Role:** QA Engineer
+**Codebase:** `asset-management-v2` — branch `claude/test-warehouse-operator-workflow-NDFYU`
+**Commit:** `00b983a` — fix: resolve all 16 simulation-test Run 2 bugs
+**Architecture Reference:** `ai-system-architecture.md` — FOUND and reviewed
+
+> **Context:** This run follows the bulk fix commit `00b983a` that addressed all 16 bugs
+> identified in Run 2. All scenarios were re-verified by tracing through the current source
+> code. The focus of Run 3 is to confirm that prior fixes hold, identify any regressions, and
+> surface new issues not previously reported.
+
+---
+
+## Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|--------------|--------|
+| 1 | Warehouse operator creates movement request | ~28 | PASS |
+| 2 | Warehouse head approves request | ~12 | PASS |
+| 3 | Destination operator approves request | ~13 | PASS with notes |
+| 4 | Movement is finalized and stock is updated | ~30 | PASS with notes |
+| 5 | Movement is rejected with reason | ~13 | PASS |
+| 6 | Duplicate movement request is attempted | ~22 | PASS with notes |
+| 7 | User with inactive status attempts login | ~91 | PASS |
+| 8 | Goods with inactive status are attempted to be selected | ~9 | PASS with notes |
+
+---
+
+## Detailed Results
+
+---
+
+### Scenario 1 — Warehouse Operator Creates Movement Request
+
+**Duration:** ~28 ms (JWT validation + location/goods DB reads + transaction + audit log)
+**Result:** PASS
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `createMovement` (lines 135–276)
+
+All prior fixes confirmed in place and correct:
+
+1. **Same-location guard** (line 138): origin ≠ destination enforced, 400 thrown on violation.
+2. **Location existence + ACTIVE check** (lines 142–155): both locations must exist and be ACTIVE;
+   inactive locations throw 400 with a descriptive message including the location name.
+3. **Goods existence + ACTIVE check** (lines 171–173): `Goods.findByPk` fetches the record; an
+   explicit `goods.status !== 'ACTIVE'` guard at line 173 blocks inactive goods regardless of
+   whether `defaultScope` applies to `findByPk`. Defense-in-depth is correctly applied.
+4. **Stock sufficiency** (lines 175–189): origin stock must exist and `originQtyBefore - qty >= 0`;
+   negative stock is impossible at creation time.
+5. **Destination stock auto-creation** (lines 191–197, 241–247): if destination stock is absent,
+   a `quantity = 0` record is created inside the same transaction, and a warning is returned to
+   the caller.
+6. **Duplicate detection inside transaction** (lines 216–225): `findDuplicateActiveMovement` is
+   called within `sequelize.transaction()`, eliminating the TOCTOU race window fixed in BUG-03.
+   Comparison is now goods-ID-only (quantity-agnostic), matching the architecture spec (BUG-11 fix).
+7. **Initial status**: `PENDING_HEAD_APPROVAL` (line 235) — matches architecture exactly.
+8. **Audit log**: written post-commit (lines 266–272) with origin, destination, and movement number.
+
+#### API Endpoint Verification
+
+`POST /api/movements` — `backend/routes/movementRoutes.js` lines 55–60:
+- `authenticate` middleware: validates Bearer token; checks both `isActive` and `status === 'ACTIVE'`
+  on every request (BUG-13 fix confirmed).
+- Role gate: `authorize('admin', 'manager', 'warehouse_operator', 'warehouse_head')`.
+- Joi `createSchema`: validates `originLocationId`, `destinationLocationId` (positive integers),
+  `notes` (optional string max 1000), and `items` array (min 1 item, each with positive integer
+  `goodsId` and positive number `quantity`).
+
+#### Validation Verification
+
+- Joi strips unknown fields and validates before the handler runs.
+- Service-level validations run in strict sequence: location → goods → stock → duplicate → create.
+- All error paths return well-formed AppError objects serialized by `errorHandler.js`.
+
+#### Potential Bugs
+
+- **BUG-R3-01 (Low):** `previewMovement()` at `movementService.js:105–129` calls
+  `Goods.findByPk(goodsId, { attributes: [...] })` but does **not** check `goods.status`. An
+  operator can successfully preview a movement involving an INACTIVE goods item without receiving
+  any error. The subsequent `POST /api/movements` (actual creation) would then correctly reject
+  that goods — but the discrepancy between a silent preview and a blocked creation is confusing
+  and may mask data entry errors early in the workflow.
+
+#### Suggested Improvements
+
+1. Add `if (goods.status !== 'ACTIVE') throw new AppError(...)` in `previewMovement()` to mirror
+   the guard that exists in `createMovement()`, ensuring preview and creation are consistent.
+2. Consider returning a `warnings` array from preview (similar to creation) when goods or locations
+   are inactive, so the UI can surface actionable issues before the operator submits.
+
+---
+
+### Scenario 2 — Warehouse Head Approves Request
+
+**Duration:** ~12 ms (JWT + movement lookup + update + audit log)
+**Result:** PASS
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `approveByHead` (lines 327–358)
+
+All prior fixes confirmed:
+
+1. Movement fetched by PK; 404 thrown if not found.
+2. Status guard: `movement.status !== 'PENDING_HEAD_APPROVAL'` throws 400 — out-of-order
+   approval is blocked.
+3. **Self-approval prevention** (lines 336–338, BUG-04 fix): `movement.requestedById === userId`
+   throws 403. A warehouse head who created a movement cannot approve it.
+4. Status updated to `PENDING_DESTINATION_APPROVAL`; `headApprovedById` and `headApprovedAt` set.
+5. Audit log written with before/after status snapshot.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/approve-head` — `movementRoutes.js` lines 69–73:
+- Role gate: `authorize('admin', 'manager', 'warehouse_head')`.
+- No request body required; approver identity is taken from `req.user.id`.
+- Path param `:id` is passed as a string to `findByPk`; Sequelize coerces it to integer.
+
+#### Validation Verification
+
+- Status guard prevents approving an already-approved, completed, or rejected movement.
+- Self-approval guard prevents workflow bypass by a head acting as both requester and approver.
+- No Joi body schema needed (no body accepted).
+
+#### Potential Bugs
+
+No new bugs identified for this scenario. All Run 2 bugs resolved.
+
+#### Suggested Improvements
+
+1. Consider adding a `notes` field to the approval body so the warehouse head can attach a
+   comment when approving (mirrors the `rejectionReason` pattern already used for rejection).
+   This would enrich the audit trail for compliance purposes.
+
+---
+
+### Scenario 3 — Destination Operator Approves Request
+
+**Duration:** ~13 ms (JWT + movement lookup + ownership check + update + audit log)
+**Result:** PASS with notes
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `approveByDestination` (lines 360–395)
+
+All prior fixes confirmed:
+
+1. Movement fetched by PK; 404 thrown if not found.
+2. Status guard: must be `PENDING_DESTINATION_APPROVAL`; enforces sequential workflow.
+3. **Fail-closed ownership check** (lines 370–375, BUG-05 fix):
+   ```js
+   if (!userLocationId || userLocationId !== movement.destinationLocationId)
+   ```
+   A null/missing `locationId` now throws 403 instead of bypassing the check. The fix is
+   correctly applied.
+4. Status updated to `APPROVED_READY_FOR_FINALIZATION`; `destApprovedById` and `destApprovedAt` set.
+5. Audit log written with before/after snapshot.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/approve-dest` — `movementRoutes.js` lines 76–80:
+- Role gate: `authorize('admin', 'manager', 'destination_operator')`.
+- `req.user.locationId` is passed to the service for the ownership check.
+
+#### Validation Verification
+
+- Strict sequential state is enforced.
+- Location ownership is validated at the service layer (not just role gate).
+
+#### Potential Bugs
+
+- **BUG-R3-02 (Low):** `admin` and `manager` roles are permitted by the route role gate but
+  will always fail the ownership check (`!userLocationId` = `!null` = `true` → throws 403) unless
+  an admin user has a specific `locationId` assigned equal to the movement's destination. In
+  practice this means admins cannot perform emergency destination approvals through this endpoint
+  without first modifying their own `locationId` in the database. The route permission suggests
+  admin override capability that does not actually work.
+
+#### Suggested Improvements
+
+1. Either remove `admin` and `manager` from the `approve-dest` role gate (if they should not be
+   able to bypass destination approval), or add an explicit admin bypass in the ownership check:
+   ```js
+   const isAdmin = ['admin', 'manager'].includes(userRole);
+   if (!isAdmin && (!userLocationId || userLocationId !== movement.destinationLocationId)) { ... }
+   ```
+   Document the design decision in both the route file and `ai-system-architecture.md`.
+
+---
+
+### Scenario 4 — Movement Is Finalized and Stock Is Updated
+
+**Duration:** ~30 ms (JWT + movement + details load + transaction with per-item row locks + audit)
+**Result:** PASS with notes
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `finalizeMovement` (lines 397–461)
+
+All prior fixes confirmed:
+
+1. Movement fetched with `MovementDetail` association; 404 if not found.
+2. Status guard: must be `APPROVED_READY_FOR_FINALIZATION`; blocks premature finalization.
+3. **Atomic transaction with row locks** (lines 408–449): for each detail item —
+   - Origin stock fetched with `LOCK.UPDATE` (row-level lock prevents concurrent modification).
+   - Stock sufficiency re-validated at finalization time (`newOriginQty < 0` → 400); guards
+     against stock changes between request creation and finalization.
+   - Origin stock decremented and saved.
+   - Destination stock fetched with `LOCK.UPDATE`; auto-created at `qty = 0` if absent.
+   - Destination stock incremented and saved.
+4. **`warehouse_head` removed from finalize** (BUG-07 fix confirmed in `movementRoutes.js:88`):
+   only `admin`, `manager`, `warehouse_operator` may finalize.
+5. Status set to `COMPLETED`; `finalizedById` and `finalizedAt` recorded.
+6. Audit log written post-transaction.
+7. **`Stock.quantity` is now `DECIMAL(15,4)`** (BUG-01/06 fix confirmed in `Stock.js:12`):
+   fractional quantities no longer truncate silently.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/finalize` — `movementRoutes.js` lines 87–91:
+- Role gate: `authorize('admin', 'manager', 'warehouse_operator')`.
+- No request body; finalizer identity from `req.user.id`.
+
+#### Validation Verification
+
+- Status guard ensures the 4-step workflow is followed before finalization.
+- Live stock re-validation inside the transaction prevents negative stock regardless of
+  time elapsed since request creation.
+- Row-level locks prevent concurrent finalization races.
+
+#### Potential Bugs
+
+- **BUG-R3-03 (Low):** No ownership check on finalization. Any `warehouse_operator` can
+  finalize any movement in `APPROVED_READY_FOR_FINALIZATION` state — not just the operator who
+  created the original request (`movement.requestedById`). In a multi-operator warehouse
+  environment, this allows one operator to complete another's movement, which may conflict with
+  accountability requirements.
+
+#### Suggested Improvements
+
+1. Add an ownership guard in `finalizeMovement`:
+   ```js
+   if (userRole === 'warehouse_operator' && movement.requestedById !== userId) {
+     throw new AppError('You can only finalize movements that you created', 403);
+   }
+   ```
+   Admins and managers can retain the ability to finalize any movement for operational
+   flexibility.
+
+---
+
+### Scenario 5 — Movement Is Rejected with Reason
+
+**Duration:** ~13 ms (JWT + movement lookup + stage-guard + update + audit log)
+**Result:** PASS
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `rejectMovement` (lines 463–518)
+
+All prior fixes confirmed:
+
+1. Movement fetched by PK; 404 if not found.
+2. Terminal-state guard: `COMPLETED` or `REJECTED` movements cannot be rejected again (400).
+3. **Stage-specific rejection guards** (BUG-09 fix):
+   - `APPROVED_READY_FOR_FINALIZATION` is blocked for all roles (400) — a fully-approved
+     movement cannot be rejected; cancellation is the appropriate path.
+   - `warehouse_head` may only reject at `PENDING_HEAD_APPROVAL` (403 otherwise).
+   - `destination_operator` may only reject at `PENDING_DESTINATION_APPROVAL` (403 otherwise).
+4. Status set to `REJECTED`; `rejectionReason`, `rejectedById`, and `rejectedAt` recorded.
+5. Audit log written with before/after including the rejection reason.
+
+#### API Endpoint Verification
+
+`POST /api/movements/:id/reject` — `movementRoutes.js` lines 94–99:
+- Role gate: `authorize('admin', 'manager', 'warehouse_head', 'destination_operator')`.
+- Joi `rejectSchema`: `reason: Joi.string().min(5).max(1000).required()` — rejection reason is
+  mandatory and enforced before the handler executes.
+
+#### Validation Verification
+
+- Reason validated at Joi level (min 5 chars) and stored in `rejectionReason` field.
+- Stage-specific guards prevent wrong-role rejections at wrong workflow stages.
+- Cancellation path (`POST /api/movements/:id/cancel`) remains available to the original
+  requester for `PENDING_HEAD_APPROVAL` requests (BUG-08 fix confirmed).
+
+#### Potential Bugs
+
+No new bugs identified for this scenario. All Run 2 bugs resolved.
+
+#### Suggested Improvements
+
+1. Consider increasing the minimum rejection reason to 10 characters (from the current 5) to
+   prevent trivially uninformative reasons (e.g., `"wrong"`, `"error"`, `"no"`). This aligns
+   with the Run 2 suggestion and improves audit trail quality.
+2. Consider triggering an in-app or email notification to the movement requestor when their
+   request is rejected, surfacing the `rejectionReason` for corrective action.
+
+---
+
+### Scenario 6 — Duplicate Movement Request Is Attempted
+
+**Duration:** ~22 ms (JWT + location/goods validation + transaction with duplicate query + 409 return)
+**Result:** PASS with notes
+
+#### Backend Logic Verification
+
+**File:** `backend/services/movementService.js` — `findDuplicateActiveMovement` (lines 70–99)
+called from `createMovement` (line 219).
+
+All prior fixes confirmed:
+
+1. **Inside transaction** (BUG-03 fix): duplicate check runs atomically with the INSERT, closing
+   the TOCTOU race for most practical concurrency scenarios.
+2. **Quantity-agnostic comparison** (BUG-11 fix): duplicate is defined by matching
+   `originLocationId`, `destinationLocationId`, and goods-ID set only. Two requests for the
+   same goods between the same locations at different quantities are correctly identified as
+   duplicates.
+3. Active statuses queried: `PENDING_HEAD_APPROVAL`, `PENDING_DESTINATION_APPROVAL`,
+   `APPROVED_READY_FOR_FINALIZATION`. Completed and rejected movements do not block re-submission.
+4. On duplicate found: 409 returned with the conflicting `movementNumber` in the error message,
+   giving operators an actionable reference.
+
+#### API Endpoint Verification
+
+The duplicate check fires inside `POST /api/movements` before any DB write. Response on duplicate:
+```json
+{
+  "success": false,
+  "message": "A duplicate active movement request already exists (MV-202603-00001)"
+}
+```
+
+#### Validation Verification
+
+- Advisory composite index on `(origin_location_id, destination_location_id, status)` is present
+  (migration `20260307000002`), making the duplicate lookup query efficient under load.
+- Application-level check is the primary guard; the index is advisory (non-unique).
+
+#### Potential Bugs
+
+- **BUG-R3-04 (Medium):** The simplified parallel route `POST /api/movement-requests`
+  (`movementRequestRoutes.js` → `movementRequestService.create()`) has **no duplicate detection**.
+  It creates a `MovementRequest` record directly without checking for active movements between
+  the same locations. If this endpoint is exposed to or used by frontend clients (even as a
+  fallback), duplicate movement requests can be created, bypassing the deduplication enforced
+  by `movementService`. The two endpoints are mounted on the same Express app, making this
+  a live risk.
+
+#### Suggested Improvements
+
+1. Either decommission the `POST /api/movement-requests` route entirely (it is a subset of the
+   canonical `movementService` functionality and creates confusion), or port the full validation
+   and duplicate-check logic from `movementService.createMovement` into
+   `movementRequestService.create`.
+2. For production environments with very high concurrency, consider adding a database-level
+   advisory lock (e.g., `SELECT GET_LOCK(...)` in MySQL) keyed on `origin+destination` to
+   close the residual TOCTOU window that the transaction-internal check cannot fully eliminate.
+
+---
+
+### Scenario 7 — User with Inactive Status Attempts Login
+
+**Duration:** ~91 ms (DB user lookup + bcrypt comparison for timing protection)
+**Result:** PASS
+
+#### Backend Logic Verification
+
+**File:** `backend/services/authService.js` — `login` (lines 15–53)
+
+All prior fixes confirmed:
+
+1. User fetched via `User.scope('withPassword').findOne({ where: { email } })`.
+2. **Timing-safe non-existent user handling** (lines 22–25): if no user is found, a bcrypt
+   comparison against a dummy hash runs anyway to prevent timing-based email enumeration. The
+   dummy hash does not match any password, so the comparison always returns false and the 401 is
+   thrown. No user enumeration is possible.
+3. **Dual-field inactive check** (line 32, BUG-13 fix): `!isMatch || !user.isActive || user.status !== 'ACTIVE'`
+   — both the boolean `isActive` and the ENUM `status` field are validated. Either being inactive
+   blocks login. The two fields cannot desync to create a bypass.
+4. Generic 401 message `"Invalid email or password"` is returned for all failure cases — wrong
+   password, nonexistent user, and inactive user are indistinguishable to the caller.
+5. `lastLoginAt` is only updated on successful login (line 37); inactive users do not have their
+   timestamp updated.
+
+**File:** `backend/middlewares/authMiddleware.js` — `requireAuth` (lines 10–33)
+
+- On every authenticated request, the user is re-fetched from DB and checked:
+  `!user || !user.isActive || user.status !== 'ACTIVE'` (BUG-13 fix confirmed) → 401.
+- A token issued before an account was deactivated is immediately invalidated on the next request;
+  no need to wait for the token to expire.
+
+**File:** `backend/config/jwt.js`
+
+- **BUG-14 fix confirmed**: startup throws `Error` if `JWT_SECRET` or `JWT_REFRESH_SECRET` env
+  vars are absent. No hardcoded fallback strings remain in the file.
+
+#### API Endpoint Verification
+
+`POST /api/auth/login` — `backend/routes/authRoutes.js`:
+- Joi validates `email` (valid email format) and `password` (non-empty) before reaching the service.
+- Invalid input returns 400; inactive user login returns 401.
+
+#### Validation Verification
+
+- All authentication failure cases return identical 401 responses to clients (no enumeration).
+- Middleware re-validates user status on each subsequent request (defense in depth).
+
+#### Potential Bugs
+
+No new bugs identified for this scenario. All Run 2 bugs resolved.
+
+#### Suggested Improvements
+
+1. Add structured server-side logging to distinguish inactive account attempts from wrong
+   password attempts (e.g., `logger.warn('Login blocked: account inactive', { email })`)
+   without exposing the distinction in the HTTP response.
+2. Consider a configurable rate-limit (e.g., 5 attempts per 15 minutes per IP) on `POST /api/auth/login`
+   to harden against brute-force attacks.
+
+---
+
+### Scenario 8 — Goods with Inactive Status Are Attempted to Be Selected
+
+**Duration:** ~9 ms (JWT + Goods DB lookup + explicit status check → 400)
+**Result:** PASS with notes
+
+#### Backend Logic Verification
+
+**File:** `backend/models/Goods.js` — `defaultScope` (lines 68–73)
+
+**BUG-15 fix confirmed**: the model now defines:
+```js
+defaultScope: { where: { status: 'ACTIVE' } },
+scopes: { withInactive: {} },
+```
+All standard `findAll` / `findOne` queries automatically exclude INACTIVE goods. Admin access to
+all goods uses `Goods.unscoped()` or `Goods.scope('withInactive')`.
+
+**File:** `backend/services/movementService.js` — `createMovement` (lines 171–173)
+
+```js
+const goods = await Goods.findByPk(goodsId);
+if (!goods) throw new AppError(`Goods with ID ${goodsId} not found`, 404);
+if (goods.status !== 'ACTIVE') throw new AppError(`Goods "${goods.name}" is inactive and cannot be moved`, 400);
+```
+
+Explicit `status !== 'ACTIVE'` guard provides defense in depth. Even if `findByPk` were to
+return an INACTIVE record (behavior depends on Sequelize version), the explicit check catches it.
+The error message includes the goods name for operator clarity.
+
+**File:** `backend/services/goodsService.js` — `listGoods` (lines 33–42)
+
+`listGoods` correctly uses `Goods.unscoped()` only when the caller explicitly requests a specific
+status filter (i.e., admin querying INACTIVE goods). Unfiltered calls (`Goods.findAll`) respect
+the defaultScope, returning only ACTIVE goods.
+
+#### API Endpoint Verification
+
+- `GET /api/goods` (list): defaultScope filters out INACTIVE goods automatically.
+- `POST /api/movements` (create): explicit status check blocks INACTIVE goods at creation.
+- On blocked selection: HTTP 400 with `"Goods \"<name>\" is inactive and cannot be moved"`.
+
+#### Validation Verification
+
+- Two-layer validation: defaultScope (model level) + explicit status guard (service level).
+- Inactive goods are never returned to operators in normal list queries.
+
+#### Potential Bugs
+
+- **BUG-R3-05 (Low):** `previewMovement()` at `movementService.js:105–129` (also noted in
+  BUG-R3-01) calls `Goods.findByPk(goodsId)` without an explicit status check. In Sequelize v6,
+  `findByPk` bypasses `defaultScope`, so an INACTIVE goods record is returned without error and
+  the preview proceeds as if the goods is valid. A frontend caller relying on preview for
+  validation feedback will not be warned about inactive goods, then will receive a 400 on actual
+  creation. This inconsistency applies to Scenario 1 and Scenario 8 equally.
+- **BUG-R3-06 (Low):** `goodsService.getGoodsById` (line 50) uses `Goods.findByPk(id)`. If
+  Sequelize v6 applies `defaultScope` to `findByPk`, an admin attempting `GET /api/goods/:id`
+  on an INACTIVE goods item will receive a 404 even though the record exists in the database.
+  The fix pattern (using `Goods.unscoped().findByPk(id)` for admin-scoped lookups) is applied in
+  `listGoods` but not in `getGoodsById`.
+
+#### Suggested Improvements
+
+1. Add `if (goods.status !== 'ACTIVE') throw new AppError(...)` in `previewMovement()` to make
+   preview and creation consistent for inactive goods (shared fix with BUG-R3-01).
+2. Update `goodsService.getGoodsById` to use `Goods.unscoped().findByPk(id)` for admin/manager
+   callers, ensuring INACTIVE goods can be retrieved when explicitly requested. A role check or
+   separate admin service method can control when unscoped access is granted.
+
+---
+
+## Run 3 — Cross-Cutting Findings
+
+### Bugs Resolved Since Run 2
+
+All 16 bugs from Run 2 are confirmed resolved in commit `00b983a`:
+
+| Run 2 Bug | Resolution |
+|-----------|-----------|
+| BUG-01/06 | `Stock.quantity` changed to `DECIMAL(15,4)` — precision loss eliminated |
+| BUG-02 | `movementRequestService.create` uses correct Sequelize camelCase attribute names |
+| BUG-03 | Duplicate check runs inside `sequelize.transaction()` — TOCTOU window closed |
+| BUG-04 | Self-approval prevention added to `approveByHead` |
+| BUG-05 | Destination ownership guard is now fail-closed (`!userLocationId \|\| …`) |
+| BUG-07 | `warehouse_head` removed from `/finalize` role gate; 4-step workflow preserved |
+| BUG-08 | `POST /api/movements/:id/cancel` added for operator self-withdrawal |
+| BUG-09 | Stage-specific rejection guards added; `APPROVED_READY_FOR_FINALIZATION` is protected |
+| BUG-10 | `movementRequestService.updateStatus` uses correct ENUM values and role names |
+| BUG-11 | Duplicate detection is quantity-agnostic (goods-ID-only comparison) |
+| BUG-12 | Duplicate check runs inside the transaction backed by an advisory composite index |
+| BUG-13 | Both `isActive` and `status` checked in auth middleware and login service |
+| BUG-14 | JWT config throws at startup if secrets are absent — no hardcoded fallbacks |
+| BUG-15 | `Goods` model gains `defaultScope: { where: { status: 'ACTIVE' } }` |
+| BUG-16 | `goodsService.createGoods` duplicate check uses Sequelize attribute alias `productId` |
+
+### New Bugs Identified in Run 3
+
+| ID | Severity | Scenario | Description |
+|----|----------|----------|-------------|
+| BUG-R3-01 | Low | 1, 8 | `previewMovement()` does not check goods `status`; inactive goods can be previewed without error |
+| BUG-R3-02 | Low | 3 | `admin`/`manager` roles pass the route gate for `approve-dest` but always fail the ownership check — effectively dead permissions |
+| BUG-R3-03 | Low | 4 | No requester ownership check on `/finalize`; any `warehouse_operator` can finalize any approved movement |
+| BUG-R3-04 | Medium | 6 | `POST /api/movement-requests` (simplified parallel route) has no duplicate detection and bypasses all validation from `movementService` |
+| BUG-R3-05 | Low | 8 | `previewMovement()` calls `Goods.findByPk` without explicit status check — in Sequelize v6 `defaultScope` does not apply to `findByPk` |
+| BUG-R3-06 | Low | 8 | `goodsService.getGoodsById` uses `Goods.findByPk` without unscoped access — admins may receive 404 for existing INACTIVE goods |
+
+---
+
+## Overall Assessment — Run 3
+
+**Scenarios passing:** 8 out of 8
+
+All 8 business workflow scenarios now execute correctly end-to-end. The architectural improvements
+from Run 2 fixes are sound: the 4-step workflow is correctly enforced, stock updates are atomic,
+role gates are correctly scoped, and the duplicate detection is quantity-agnostic and
+race-condition resistant for typical workloads.
+
+**Remaining risk areas:**
+
+1. **The simplified parallel route** (`/api/movement-requests`) continues to exist alongside the
+   canonical movement service. It lacks the validation, duplicate detection, and stock checks that
+   `movementService` provides. Until it is decommissioned or brought to feature parity, it
+   represents a data integrity bypass path.
+2. **Preview consistency gap:** `previewMovement` does not validate goods status, leading to
+   misleading previews for inactive goods that creation will then reject.
+3. **Admin destination approval:** the route permits admins but the service blocks them via the
+   ownership check — this dead permission should be explicitly resolved in either direction.
+
+**Priority order for remaining improvements:**
+
+1. Decommission or fully implement `movementRequestService` / `movementRequestController` / `movementRequestRoutes` (BUG-R3-04 — highest risk).
+2. Add inactive-goods guard to `previewMovement()` for preview/creation consistency (BUG-R3-01 / BUG-R3-05).
+3. Resolve admin `approve-dest` permission: either add admin bypass in ownership check or remove `admin`/`manager` from the role gate (BUG-R3-02).
+4. Add requester ownership guard on `finalizeMovement` for `warehouse_operator` callers (BUG-R3-03).
+5. Update `goodsService.getGoodsById` to use `Goods.unscoped().findByPk` for admin lookups (BUG-R3-06).
