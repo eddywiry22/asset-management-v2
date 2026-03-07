@@ -1,6 +1,6 @@
 const { Router } = require('express');
 const authController = require('../controllers/authController');
-const { authenticate } = require('../middlewares/authMiddleware');
+const { requireAuth, checkPermission } = require('../middlewares/authMiddleware');
 const validate = require('../middlewares/validate');
 const Joi = require('joi');
 
@@ -11,10 +11,10 @@ const loginSchema = Joi.object({
   password: Joi.string().min(6).required(),
 });
 
-// POST /api/auth/login
+// POST /api/auth/login  – public
 router.post('/login', validate(loginSchema), authController.login);
 
-// GET /api/auth/profile  (protected)
-router.get('/profile', authenticate, authController.getProfile);
+// GET /api/auth/profile – protected; requires a valid token + dashboard view permission
+router.get('/profile', requireAuth, checkPermission('dashboard', 'view'), authController.getProfile);
 
 module.exports = router;

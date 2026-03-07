@@ -4,6 +4,11 @@ const AppError = require('../utils/AppError');
 
 /**
  * Validate credentials and return signed tokens + user info.
+ *
+ * Error rules:
+ *  - User not found or wrong password → 401 generic message (no user enumeration)
+ *  - User found but inactive          → 403 with actionable message
+ *
  * @param {string} email
  * @param {string} password
  */
@@ -11,8 +16,17 @@ const login = async (email, password) => {
   // Fetch user WITH password (using scoped query)
   const user = await User.scope('withPassword').findOne({ where: { email } });
 
-  if (!user || !user.isActive) {
+  // User not found – return generic message to prevent user enumeration
+  if (!user) {
     throw new AppError('Invalid email or password', 401);
+  }
+
+  // User is inactive – return a clear, actionable message
+  if (!user.isActive) {
+    throw new AppError(
+      'Your account has been inactivated, please contact your administrator',
+      403
+    );
   }
 
   const isMatch = await user.verifyPassword(password);

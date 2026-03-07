@@ -1,21 +1,57 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { canAccessModule } from '@/utils/permissions';
 
+/**
+ * All navigation items.
+ *
+ * Each item carries a `module` key that maps directly to the permission matrix.
+ * The sidebar filters items at render time using canAccessModule(role, module).
+ *
+ * Sections:
+ *   main  – shown to every authenticated user who has access to that module
+ *   admin – shown only in the Administration heading group (admin-tier modules)
+ */
 const NAV_ITEMS = [
-  { to: '/dashboard', label: 'Dashboard', icon: '▦' },
-  // Add more nav items here as modules are built:
-  // { to: '/assets', label: 'Assets', icon: '◫' },
-  // { to: '/categories', label: 'Categories', icon: '⊞' },
-  // { to: '/reports', label: 'Reports', icon: '◈' },
+  { to: '/dashboard',  label: 'Dashboard',  icon: '▦', module: 'dashboard' },
+  { to: '/assets',     label: 'Assets',     icon: '◫', module: 'assets'    },
+  { to: '/categories', label: 'Categories', icon: '⊞', module: 'categories'},
+  { to: '/reports',    label: 'Reports',    icon: '◈', module: 'reports'   },
 ];
 
 const ADMIN_NAV_ITEMS = [
-  // { to: '/users', label: 'Users', icon: '◎' },
-  // { to: '/settings', label: 'Settings', icon: '⚙' },
+  { to: '/users',    label: 'Users',    icon: '◎', module: 'users'    },
+  { to: '/settings', label: 'Settings', icon: '⚙', module: 'settings' },
 ];
+
+function NavItem({ to, label, icon, onClose }) {
+  return (
+    <li>
+      <NavLink
+        to={to}
+        onClick={onClose}
+        className={({ isActive }) =>
+          [
+            'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+            isActive
+              ? 'bg-primary-600 text-white'
+              : 'text-gray-300 hover:bg-gray-800 hover:text-white',
+          ].join(' ')
+        }
+      >
+        <span aria-hidden="true">{icon}</span>
+        {label}
+      </NavLink>
+    </li>
+  );
+}
 
 export default function Sidebar({ isOpen, onClose }) {
   const { user, logout } = useAuth();
+  const role = user?.role;
+
+  const visibleMain  = NAV_ITEMS.filter(({ module }) => canAccessModule(role, module));
+  const visibleAdmin = ADMIN_NAV_ITEMS.filter(({ module }) => canAccessModule(role, module));
 
   return (
     <>
@@ -47,52 +83,22 @@ export default function Sidebar({ isOpen, onClose }) {
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4">
           <ul className="space-y-1 px-3">
-            {NAV_ITEMS.map(({ to, label, icon }) => (
-              <li key={to}>
-                <NavLink
-                  to={to}
-                  onClick={onClose}
-                  className={({ isActive }) =>
-                    [
-                      'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                      isActive
-                        ? 'bg-primary-600 text-white'
-                        : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-                    ].join(' ')
-                  }
-                >
-                  <span aria-hidden="true">{icon}</span>
-                  {label}
-                </NavLink>
-              </li>
+            {/* Main navigation – filtered by role permissions */}
+            {visibleMain.map(({ to, label, icon }) => (
+              <NavItem key={to} to={to} label={label} icon={icon} onClose={onClose} />
             ))}
 
-            {/* Admin-only section */}
-            {user?.role === 'admin' && ADMIN_NAV_ITEMS.length > 0 && (
+            {/* Administration section – only rendered when the user has access to
+                at least one admin-tier module (e.g. users or settings) */}
+            {visibleAdmin.length > 0 && (
               <>
                 <li className="pt-4 pb-1">
                   <span className="px-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
                     Administration
                   </span>
                 </li>
-                {ADMIN_NAV_ITEMS.map(({ to, label, icon }) => (
-                  <li key={to}>
-                    <NavLink
-                      to={to}
-                      onClick={onClose}
-                      className={({ isActive }) =>
-                        [
-                          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                          isActive
-                            ? 'bg-primary-600 text-white'
-                            : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-                        ].join(' ')
-                      }
-                    >
-                      <span aria-hidden="true">{icon}</span>
-                      {label}
-                    </NavLink>
-                  </li>
+                {visibleAdmin.map(({ to, label, icon }) => (
+                  <NavItem key={to} to={to} label={label} icon={icon} onClose={onClose} />
                 ))}
               </>
             )}
