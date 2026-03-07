@@ -9,8 +9,38 @@ const startServer = async () => {
     await sequelize.authenticate();
     console.log('Database connection established successfully.');
 
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+    });
+
+    // Graceful shutdown
+    const shutdown = async (signal) => {
+      console.log(`\n${signal} received. Shutting down gracefully...`);
+      server.close(async () => {
+        console.log('HTTP server closed.');
+        try {
+          await sequelize.close();
+          console.log('Database connection closed.');
+        } catch (err) {
+          console.error('Error closing database connection:', err);
+        }
+        process.exit(0);
+      });
+
+      // Force shutdown after 10 seconds if graceful shutdown stalls
+      setTimeout(() => {
+        console.error('Forced shutdown after timeout.');
+        process.exit(1);
+      }, 10_000);
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    // Handle unhandled promise rejections
+    process.on('unhandledRejection', (reason) => {
+      console.error('Unhandled Rejection:', reason);
+      shutdown('unhandledRejection');
     });
   } catch (error) {
     console.error('Unable to connect to the database:', error);
