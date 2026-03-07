@@ -6,6 +6,9 @@ import AuthLayout from '@/layouts/AuthLayout';
 import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
 import NotFoundPage from '@/pages/NotFoundPage';
+import MovementsListPage from '@/pages/movements/MovementsListPage';
+import MovementNewPage from '@/pages/movements/MovementNewPage';
+import MovementDetailPage from '@/pages/movements/MovementDetailPage';
 
 export default function App() {
   return (
@@ -22,7 +25,10 @@ export default function App() {
             <Route element={<MainLayout />}>
               <Route index element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
-              {/* Add more protected routes here as modules are built */}
+              {/* Goods Movement module */}
+              <Route path="/movements" element={<MovementsListPage />} />
+              <Route path="/movements/new" element={<MovementNewPage />} />
+              <Route path="/movements/:id" element={<MovementDetailPage />} />
             </Route>
           </Route>
 
