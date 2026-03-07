@@ -69,6 +69,8 @@ module.exports = (sequelize, DataTypes) => {
     Goods.belongsTo(models.User, { foreignKey: 'createdBy', as: 'creator' });
     Goods.belongsTo(models.User, { foreignKey: 'updatedBy', as: 'updater' });
     Goods.hasMany(models.Stock, { foreignKey: 'goodsId', as: 'stock' });
+    // MovementDetail references Goods as the single source of truth for goods/products
+    Goods.hasMany(models.MovementDetail, { foreignKey: 'goodsId', as: 'movementDetails' });
   };
 
   return Goods;

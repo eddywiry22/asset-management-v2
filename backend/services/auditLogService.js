@@ -4,31 +4,42 @@ const { Op } = require('sequelize');
 /**
  * Create an audit log entry.
  * Can be called from controllers/services throughout the app.
+ *
+ * Field mapping matches the AuditLog model:
+ *   userId, action, entity, entityId, before, after
  */
-const createAuditLog = async ({ userId, moduleName, entityId, actionType, oldValue, newValue, description }) => {
+const createAuditLog = async ({ userId, action, entity, entityId, before, after }) => {
+  let userEmail = null;
+  if (userId) {
+    const { User: UserModel } = require('../models');
+    const actor = await UserModel.findByPk(userId, { attributes: ['email'] });
+    userEmail = actor ? actor.email : null;
+  }
+
   return AuditLog.create({
-    user_id: userId ?? null,
-    module_name: moduleName,
-    entity_id: entityId ? String(entityId) : null,
-    action_type: actionType,
-    old_value: oldValue ?? null,
-    new_value: newValue ?? null,
-    description: description ?? null,
+    userId: userId ?? null,
+    userEmail,
+    action: action ?? 'UNKNOWN',
+    entity: entity ?? 'UNKNOWN',
+    entityId: entityId ?? null,
+    before: before ?? null,
+    after: after ?? null,
   });
 };
 
 /**
  * Get paginated audit logs with optional filters.
+ * Uses camelCase field names that match the AuditLog model.
  */
-const getAuditLogs = async ({ moduleName, userId, dateFrom, dateTo, page = 1, limit = 20 }) => {
+const getAuditLogs = async ({ entity, userId, dateFrom, dateTo, page = 1, limit = 20 }) => {
   const where = {};
 
-  if (moduleName) {
-    where.module_name = moduleName;
+  if (entity) {
+    where.entity = entity;
   }
 
   if (userId) {
-    where.user_id = userId;
+    where.userId = userId;
   }
 
   if (dateFrom || dateTo) {
@@ -37,49 +48,40 @@ const getAuditLogs = async ({ moduleName, userId, dateFrom, dateTo, page = 1, li
       where.createdAt[Op.gte] = new Date(dateFrom);
     }
     if (dateTo) {
-      // Include the full dateTo day
       const end = new Date(dateTo);
       end.setHours(23, 59, 59, 999);
       where.createdAt[Op.lte] = end;
     }
   }
 
-  const offset = (page - 1) * limit;
+  const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
   const { count, rows } = await AuditLog.findAndCountAll({
     where,
-    include: [
-      {
-        model: User,
-        as: 'user',
-        attributes: ['id', 'name', 'email'],
-        required: false,
-      },
-    ],
     order: [['createdAt', 'DESC']],
-    limit,
+    limit: parseInt(limit, 10),
     offset,
   });
 
   return {
     logs: rows,
     total: count,
-    page,
-    limit,
-    totalPages: Math.ceil(count / limit),
+    page: parseInt(page, 10),
+    limit: parseInt(limit, 10),
+    totalPages: Math.ceil(count / parseInt(limit, 10)),
   };
 };
 
 /**
- * Get distinct module names for filter dropdown.
+ * Get distinct entity names for filter dropdown.
  */
-const getModuleNames = async () => {
+const getEntityNames = async () => {
   const results = await AuditLog.findAll({
-    attributes: ['module_name'],
-    group: ['module_name'],
-    order: [['module_name', 'ASC']],
+    attributes: ['entity'],
+    group: ['entity'],
+    order: [['entity', 'ASC']],
   });
-  return results.map((r) => r.module_name);
+  return results.map((r) => r.entity);
 };
 
-module.exports = { createAuditLog, getAuditLogs, getModuleNames };
+module.exports = { createAuditLog, getAuditLogs, getEntityNames };

@@ -50,7 +50,12 @@ const approveHead = async (req, res, next) => {
 
 const approveDest = async (req, res, next) => {
   try {
-    const movement = await movementService.approveByDestination(req.user.id, req.params.id);
+    // Pass the operator's locationId for destination ownership check
+    const movement = await movementService.approveByDestination(
+      req.user.id,
+      req.params.id,
+      req.user.locationId
+    );
     return success(res, movement, 'Movement approved by destination');
   } catch (err) {
     return next(err);

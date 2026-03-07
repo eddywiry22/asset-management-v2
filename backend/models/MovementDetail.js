@@ -11,9 +11,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: false,
       },
-      itemId: {
+      // Unified: references Goods (single source of truth for goods/products)
+      goodsId: {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: false,
+        field: 'goods_id',
       },
       quantity: {
         type: DataTypes.DECIMAL(15, 4),
@@ -44,7 +46,7 @@ module.exports = (sequelize, DataTypes) => {
 
   MovementDetail.associate = (models) => {
     MovementDetail.belongsTo(models.MovementHeader, { foreignKey: 'movementHeaderId', as: 'header' });
-    MovementDetail.belongsTo(models.Item, { foreignKey: 'itemId', as: 'item' });
+    MovementDetail.belongsTo(models.Goods, { foreignKey: 'goodsId', as: 'goods' });
   };
 
   return MovementDetail;

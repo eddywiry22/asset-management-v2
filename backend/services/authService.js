@@ -16,21 +16,18 @@ const login = async (email, password) => {
   // Fetch user WITH password (using scoped query)
   const user = await User.scope('withPassword').findOne({ where: { email } });
 
-  // User not found – return generic message to prevent user enumeration
+  // Always run a full bcrypt comparison to prevent timing-based user enumeration.
+  // All authentication failures (not found, inactive, wrong password) return the
+  // same generic 401 so callers cannot probe which emails exist.
   if (!user) {
+    await require('bcrypt').compare(password, '$2b$12$dummyhashfortimingprotection000000000000000');
     throw new AppError('Invalid email or password', 401);
   }
 
-  // User is inactive – return a clear, actionable message
-  if (!user.isActive) {
-    throw new AppError(
-      'Your account has been inactivated, please contact your administrator',
-      403
-    );
-  }
-
   const isMatch = await user.verifyPassword(password);
-  if (!isMatch) {
+
+  // Check inactive AFTER password verification – unified response prevents enumeration
+  if (!isMatch || !user.isActive) {
     throw new AppError('Invalid email or password', 401);
   }
 

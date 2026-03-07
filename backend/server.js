@@ -1,4 +1,18 @@
 require('dotenv').config();
+
+// ---------------------------------------------------------------------------
+// Enforce required environment variables at startup before anything else loads
+// ---------------------------------------------------------------------------
+const REQUIRED_ENV = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
+const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
+if (missing.length > 0) {
+  console.error(
+    `[FATAL] Missing required environment variable(s): ${missing.join(', ')}. ` +
+      'Set them in your .env file or environment before starting the server.'
+  );
+  process.exit(1);
+}
+
 const app = require('./app');
 const { sequelize } = require('./models');
 

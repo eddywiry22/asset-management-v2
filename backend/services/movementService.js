@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
-const { sequelize, MovementHeader, MovementDetail, Location, Item, Stock, User } = require('../models');
+const { sequelize, MovementHeader, MovementDetail, Location, Goods, Stock, User } = require('../models');
 const AppError = require('../utils/AppError');
+const { createAuditLog } = require('./auditLogService');
 
 const ACTIVE_STATUSES = [
   'PENDING_HEAD_APPROVAL',
@@ -20,16 +21,20 @@ const generateMovementNumber = async () => {
   return `MV-${year}${month}-${String(count + 1).padStart(5, '0')}`;
 };
 
-const fetchStockQty = async (locationId, itemId, transaction = null) => {
-  const opts = { where: { locationId, itemId } };
+/**
+ * Fetch the current stock quantity for a goods item at a location.
+ * Uses goodsId (references Goods table) — the single source of truth.
+ */
+const fetchStockQty = async (locationId, goodsId, transaction = null) => {
+  const opts = { where: { locationId, goodsId } };
   if (transaction) opts.transaction = transaction;
   const stock = await Stock.findOne(opts);
   return stock ? parseFloat(stock.quantity) : null;
 };
 
 const withFullIncludes = () => [
-  { model: Location, as: 'originLocation', attributes: ['id', 'name', 'code'] },
-  { model: Location, as: 'destinationLocation', attributes: ['id', 'name', 'code'] },
+  { model: Location, as: 'originLocation', attributes: ['id', 'name', 'status'] },
+  { model: Location, as: 'destinationLocation', attributes: ['id', 'name', 'status'] },
   { model: User, as: 'requestedBy', attributes: ['id', 'name', 'email'] },
   { model: User, as: 'headApprovedBy', attributes: ['id', 'name', 'email'] },
   { model: User, as: 'destApprovedBy', attributes: ['id', 'name', 'email'] },
@@ -38,7 +43,7 @@ const withFullIncludes = () => [
   {
     model: MovementDetail,
     as: 'details',
-    include: [{ model: Item, as: 'item', attributes: ['id', 'name', 'sku', 'unit'] }],
+    include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'productId', 'status'] }],
   },
 ];
 
@@ -57,19 +62,19 @@ const findDuplicateActiveMovement = async (originLocationId, destinationLocation
   });
 
   const sortedItems = [...items]
-    .map((i) => ({ itemId: Number(i.itemId), quantity: parseFloat(i.quantity) }))
-    .sort((a, b) => a.itemId - b.itemId);
+    .map((i) => ({ goodsId: Number(i.goodsId), quantity: parseFloat(i.quantity) }))
+    .sort((a, b) => a.goodsId - b.goodsId);
 
   for (const movement of activeMovements) {
     const movDetails = [...movement.details]
-      .map((d) => ({ itemId: Number(d.itemId), quantity: parseFloat(d.quantity) }))
-      .sort((a, b) => a.itemId - b.itemId);
+      .map((d) => ({ goodsId: Number(d.goodsId), quantity: parseFloat(d.quantity) }))
+      .sort((a, b) => a.goodsId - b.goodsId);
 
     if (movDetails.length !== sortedItems.length) continue;
 
     const isMatch = sortedItems.every((item, idx) => {
       const detail = movDetails[idx];
-      return detail.itemId === item.itemId && detail.quantity === item.quantity;
+      return detail.goodsId === item.goodsId && detail.quantity === item.quantity;
     });
 
     if (isMatch) return movement;
@@ -83,19 +88,18 @@ const findDuplicateActiveMovement = async (originLocationId, destinationLocation
 
 const previewMovement = async (originLocationId, destinationLocationId, items) => {
   const rows = [];
-  for (const { itemId, quantity } of items) {
-    const item = await Item.findByPk(itemId, { attributes: ['id', 'name', 'sku', 'unit'] });
-    if (!item) throw new AppError(`Item with ID ${itemId} not found`, 404);
+  for (const { goodsId, quantity } of items) {
+    const goods = await Goods.findByPk(goodsId, { attributes: ['id', 'name', 'productId', 'status'] });
+    if (!goods) throw new AppError(`Goods with ID ${goodsId} not found`, 404);
 
-    const originQtyBefore = await fetchStockQty(originLocationId, itemId);
-    const destQtyBefore = await fetchStockQty(destinationLocationId, itemId);
+    const originQtyBefore = await fetchStockQty(originLocationId, goodsId);
+    const destQtyBefore = await fetchStockQty(destinationLocationId, goodsId);
     const qty = parseFloat(quantity);
 
     rows.push({
-      itemId: item.id,
-      itemName: item.name,
-      itemSku: item.sku,
-      itemUnit: item.unit,
+      goodsId: goods.id,
+      goodsName: goods.name,
+      goodsProductId: goods.productId,
       quantity: qty,
       originQtyBefore,
       originQtyAfter: originQtyBefore !== null ? originQtyBefore - qty : null,
@@ -126,6 +130,14 @@ const createMovement = async (requestedById, data) => {
   if (!originLocation) throw new AppError('Origin location not found', 404);
   if (!destLocation) throw new AppError('Destination location not found', 404);
 
+  // Guard: locations must be ACTIVE to be used in movements
+  if (originLocation.status !== 'ACTIVE') {
+    throw new AppError(`Origin location "${originLocation.name}" is inactive and cannot be used in a movement`, 400);
+  }
+  if (destLocation.status !== 'ACTIVE') {
+    throw new AppError(`Destination location "${destLocation.name}" is inactive and cannot be used in a movement`, 400);
+  }
+
   if (!items || items.length === 0) {
     throw new AppError('At least one item is required', 400);
   }
@@ -141,20 +153,21 @@ const createMovement = async (requestedById, data) => {
   const warnings = [];
   const detailData = [];
 
-  for (const { itemId, quantity } of items) {
+  for (const { goodsId, quantity } of items) {
     const qty = parseFloat(quantity);
     if (!qty || qty <= 0) {
       throw new AppError(`Quantity must be greater than 0`, 400);
     }
 
-    const item = await Item.findByPk(itemId);
-    if (!item) throw new AppError(`Item with ID ${itemId} not found`, 404);
-    if (!item.isActive) throw new AppError(`Item "${item.name}" is inactive`, 400);
+    // Use Goods as the single source of truth; check ACTIVE status
+    const goods = await Goods.findByPk(goodsId);
+    if (!goods) throw new AppError(`Goods with ID ${goodsId} not found`, 404);
+    if (goods.status !== 'ACTIVE') throw new AppError(`Goods "${goods.name}" is inactive and cannot be moved`, 400);
 
-    const originQtyBefore = await fetchStockQty(originLocationId, itemId);
+    const originQtyBefore = await fetchStockQty(originLocationId, goodsId);
     if (originQtyBefore === null) {
       throw new AppError(
-        `No stock record exists for item "${item.name}" at the origin location`,
+        `No stock record exists for goods "${goods.name}" at the origin location`,
         400
       );
     }
@@ -162,36 +175,34 @@ const createMovement = async (requestedById, data) => {
     const originQtyAfter = originQtyBefore - qty;
     if (originQtyAfter < 0) {
       throw new AppError(
-        `Insufficient stock for item "${item.name}". Available: ${originQtyBefore}, Requested: ${qty}`,
+        `Insufficient stock for goods "${goods.name}". Available: ${originQtyBefore}, Requested: ${qty}`,
         400
       );
     }
 
-    let destQtyBefore = await fetchStockQty(destinationLocationId, itemId);
+    let destQtyBefore = await fetchStockQty(destinationLocationId, goodsId);
     if (destQtyBefore === null) {
       warnings.push(
-        `Stock record for item "${item.name}" does not exist at the destination location. It will be created automatically.`
+        `Stock record for goods "${goods.name}" does not exist at the destination location. It will be created automatically.`
       );
       destQtyBefore = 0;
     }
 
     detailData.push({
-      itemId: Number(itemId),
+      goodsId: Number(goodsId),
       quantity: qty,
       originQtyBefore,
       originQtyAfter,
       destinationQtyBefore: destQtyBefore,
       destinationQtyAfter: destQtyBefore + qty,
-      autoCreateDestStock: destQtyBefore === 0 && (await fetchStockQty(destinationLocationId, itemId)) === null,
     });
   }
 
-  // Re-check which destination stocks need auto-creation (the loop above may have set 0 for existing stocks too)
-  // Re-derive by checking DB directly in the transaction
+  // Determine which destination stocks need auto-creation
   const itemsNeedingDestStock = [];
   for (const d of detailData) {
-    const exists = await Stock.findOne({ where: { locationId: destinationLocationId, itemId: d.itemId } });
-    if (!exists) itemsNeedingDestStock.push(d.itemId);
+    const exists = await Stock.findOne({ where: { locationId: destinationLocationId, goodsId: d.goodsId } });
+    if (!exists) itemsNeedingDestStock.push(d.goodsId);
   }
 
   const movement = await sequelize.transaction(async (t) => {
@@ -210,17 +221,17 @@ const createMovement = async (requestedById, data) => {
     );
 
     // Auto-create missing destination stocks at qty 0
-    for (const itemId of itemsNeedingDestStock) {
+    for (const goodsId of itemsNeedingDestStock) {
       await Stock.create(
-        { locationId: destinationLocationId, itemId, quantity: 0 },
+        { locationId: destinationLocationId, goodsId, quantity: 0, lastUpdatedAt: new Date() },
         { transaction: t }
       );
     }
 
     await MovementDetail.bulkCreate(
-      detailData.map(({ itemId, quantity, originQtyBefore, originQtyAfter, destinationQtyBefore, destinationQtyAfter }) => ({
+      detailData.map(({ goodsId, quantity, originQtyBefore, originQtyAfter, destinationQtyBefore, destinationQtyAfter }) => ({
         movementHeaderId: header.id,
-        itemId,
+        goodsId,
         quantity,
         originQtyBefore,
         originQtyAfter,
@@ -231,6 +242,15 @@ const createMovement = async (requestedById, data) => {
     );
 
     return header;
+  });
+
+  // Audit log: movement created
+  await createAuditLog({
+    userId: requestedById,
+    action: 'CREATE',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    after: { movementNumber: movement.movementNumber, status: movement.status, originLocationId, destinationLocationId },
   });
 
   const fullMovement = await getMovement(movement.id);
@@ -260,10 +280,10 @@ const listMovements = async ({ status, page = 1, limit = 20 } = {}) => {
   const { count, rows } = await MovementHeader.findAndCountAll({
     where,
     include: [
-      { model: Location, as: 'originLocation', attributes: ['id', 'name', 'code'] },
-      { model: Location, as: 'destinationLocation', attributes: ['id', 'name', 'code'] },
+      { model: Location, as: 'originLocation', attributes: ['id', 'name'] },
+      { model: Location, as: 'destinationLocation', attributes: ['id', 'name'] },
       { model: User, as: 'requestedBy', attributes: ['id', 'name'] },
-      { model: MovementDetail, as: 'details', attributes: ['id', 'itemId'] },
+      { model: MovementDetail, as: 'details', attributes: ['id', 'goodsId'] },
     ],
     order: [['createdAt', 'DESC']],
     limit: parseInt(limit, 10),
@@ -293,26 +313,56 @@ const approveByHead = async (userId, movementId) => {
     throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
   }
 
+  const before = { status: movement.status };
+
   await movement.update({
     status: 'PENDING_DESTINATION_APPROVAL',
     headApprovedById: userId,
     headApprovedAt: new Date(),
   });
 
+  await createAuditLog({
+    userId,
+    action: 'APPROVE_HEAD',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    before,
+    after: { status: 'PENDING_DESTINATION_APPROVAL' },
+  });
+
   return getMovement(movementId);
 };
 
-const approveByDestination = async (userId, movementId) => {
+const approveByDestination = async (userId, movementId, userLocationId) => {
   const movement = await MovementHeader.findByPk(movementId);
   if (!movement) throw new AppError('Movement not found', 404);
   if (movement.status !== 'PENDING_DESTINATION_APPROVAL') {
     throw new AppError(`Cannot approve: movement is currently "${movement.status}"`, 400);
   }
 
+  // Destination location ownership check: approver must belong to the destination location
+  if (userLocationId && userLocationId !== movement.destinationLocationId) {
+    throw new AppError(
+      'You can only approve movements where you are the destination location operator',
+      403
+    );
+  }
+
+  const before = { status: movement.status };
+
   await movement.update({
     status: 'APPROVED_READY_FOR_FINALIZATION',
     destApprovedById: userId,
     destApprovedAt: new Date(),
+  });
+
+  await createAuditLog({
+    userId,
+    action: 'APPROVE_DEST',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    before,
+    after: { status: 'APPROVED_READY_FOR_FINALIZATION' },
   });
 
   return getMovement(movementId);
@@ -327,11 +377,13 @@ const finalizeMovement = async (userId, movementId) => {
     throw new AppError(`Cannot finalize: movement is currently "${movement.status}"`, 400);
   }
 
+  const before = { status: movement.status };
+
   await sequelize.transaction(async (t) => {
     for (const detail of movement.details) {
-      // Deduct from origin (row lock)
+      // Deduct from origin (row lock) — uses goodsId
       const originStock = await Stock.findOne({
-        where: { locationId: movement.originLocationId, itemId: detail.itemId },
+        where: { locationId: movement.originLocationId, goodsId: detail.goodsId },
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
@@ -344,22 +396,22 @@ const finalizeMovement = async (userId, movementId) => {
           400
         );
       }
-      await originStock.update({ quantity: newOriginQty }, { transaction: t });
+      await originStock.update({ quantity: newOriginQty, lastUpdatedAt: new Date() }, { transaction: t });
 
-      // Add to destination (row lock)
+      // Add to destination (row lock) — uses goodsId
       let destStock = await Stock.findOne({
-        where: { locationId: movement.destinationLocationId, itemId: detail.itemId },
+        where: { locationId: movement.destinationLocationId, goodsId: detail.goodsId },
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
       if (!destStock) {
         destStock = await Stock.create(
-          { locationId: movement.destinationLocationId, itemId: detail.itemId, quantity: 0 },
+          { locationId: movement.destinationLocationId, goodsId: detail.goodsId, quantity: 0, lastUpdatedAt: new Date() },
           { transaction: t }
         );
       }
       await destStock.update(
-        { quantity: parseFloat(destStock.quantity) + parseFloat(detail.quantity) },
+        { quantity: parseFloat(destStock.quantity) + parseFloat(detail.quantity), lastUpdatedAt: new Date() },
         { transaction: t }
       );
     }
@@ -368,6 +420,15 @@ const finalizeMovement = async (userId, movementId) => {
       { status: 'COMPLETED', finalizedById: userId, finalizedAt: new Date() },
       { transaction: t }
     );
+  });
+
+  await createAuditLog({
+    userId,
+    action: 'FINALIZE',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    before,
+    after: { status: 'COMPLETED' },
   });
 
   return getMovement(movementId);
@@ -380,11 +441,22 @@ const rejectMovement = async (userId, movementId, reason) => {
     throw new AppError(`Cannot reject: movement is already "${movement.status}"`, 400);
   }
 
+  const before = { status: movement.status };
+
   await movement.update({
     status: 'REJECTED',
-    rejectionReason: reason || null,
+    rejectionReason: reason,
     rejectedById: userId,
     rejectedAt: new Date(),
+  });
+
+  await createAuditLog({
+    userId,
+    action: 'REJECT',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    before,
+    after: { status: 'REJECTED', rejectionReason: reason },
   });
 
   return getMovement(movementId);

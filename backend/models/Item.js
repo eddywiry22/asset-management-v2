@@ -33,10 +33,9 @@ module.exports = (sequelize, DataTypes) => {
     }
   );
 
-  Item.associate = (models) => {
-    Item.hasMany(models.Stock, { foreignKey: 'itemId', as: 'stocks' });
-    Item.hasMany(models.MovementDetail, { foreignKey: 'itemId', as: 'movementDetails' });
-  };
+  // Item model is legacy; Stock and MovementDetail now reference Goods as
+  // the single source of truth. No cross-model associations remain here.
+  Item.associate = (_models) => {};
 
   return Item;
 };
