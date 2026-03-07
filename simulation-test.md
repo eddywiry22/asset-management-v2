@@ -1569,3 +1569,709 @@ race-condition resistant for typical workloads.
 3. Resolve admin `approve-dest` permission: either add admin bypass in ownership check or remove `admin`/`manager` from the role gate (BUG-R3-02).
 4. Add requester ownership guard on `finalizeMovement` for `warehouse_operator` callers (BUG-R3-03).
 5. Update `goodsService.getGoodsById` to use `Goods.unscoped().findByPk` for admin lookups (BUG-R3-06).
+
+---
+
+## Run 5
+
+**Date and Time of Test:** 2026-03-07 — 15:28:36 UTC
+**Tester Role:** QA Engineer
+**Branch:** `claude/test-user-workflows-wkjcz`
+**Commit:** `b275e7a` — test: add warehouse operator workflow unit tests
+**Architecture Reference:** `ai-system-architecture.md` — FOUND ✓
+**Scope:** User & master-data management workflows, stock adjustment approval, notifications, dashboard filtering and CSV export
+
+---
+
+### Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|:-------------:|--------|
+| 1 | Admin and warehouse head can create new user, assign role and location | ~3 | FAIL — Not Implemented |
+| 2 | Admin and warehouse head can create new category and vendor | ~18 | PARTIAL PASS — warehouse_head unauthorized |
+| 3 | Admin and warehouse head can update and delete user | ~2 | FAIL — Not Implemented |
+| 4 | Admin and warehouse head can update and delete category and vendor | ~22 | PARTIAL PASS — warehouse_head unauthorized |
+| 5 | Admin and warehouse head can create new location | ~14 | PARTIAL PASS — warehouse_head unauthorized |
+| 6 | Admin and warehouse head can update and delete location | ~19 | PARTIAL PASS — warehouse_head unauthorized |
+| 7 | Admin and warehouse head can create a new goods | ~16 | PARTIAL PASS — warehouse_head unauthorized |
+| 8 | Admin and warehouse head can update and delete goods | ~21 | PARTIAL PASS — warehouse_head unauthorized + uniqueness bug |
+| 9 | Admin and warehouse operator can manually create a new stock at a location | ~25 | PASS |
+| 10 | Admin and warehouse operator can manually update a stock at a location | ~24 | PASS |
+| 11 | Warehouse head can approve manual stock creation and updates | ~12 | FAIL — warehouse_head unauthorized on approval |
+| 12 | Notification appears when movement request needs action | ~30 | PARTIAL PASS — frontend role mismatch bug |
+| 13 | Notification disappears after status change | ~28 | PARTIAL PASS — refresh works; bug inherited from Scenario 12 |
+| 14 | User can filter goods list on dashboard by location | ~35 | PASS |
+| 15 | User can download CSV respecting dashboard filters | ~40 | PARTIAL PASS — MovementRequest summary data shape bug |
+
+---
+
+### Detailed Results
+
+---
+
+### Scenario 1 — Admin and Warehouse Head Can Create New User, Assign Role and Location
+
+**Duration:** ~3 ms (route table scan only)
+**Result:** FAIL — Not Implemented
+
+#### Backend Logic Verification
+
+No user management service, controller, or routes exist.
+
+Files confirmed absent:
+- `backend/routes/userRoutes.js` — does not exist
+- `backend/controllers/userController.js` — does not exist
+- `backend/services/userService.js` — does not exist
+
+The `routes/index.js` has no `/users` mount. The only user-related endpoints are `/auth/login` and `/auth/profile`.
+
+The `User` model (`backend/models/User.js`) defines all necessary fields (`name`, `email`, `password`, `role`, `locationId`, `status`, `isActive`) and the permission matrix in `config/permissions.js` grants admin `users: ['view', 'create', 'edit', 'delete']` — but no API endpoints expose these operations.
+
+#### API Endpoints
+
+None. `POST /api/users` → 404.
+
+#### Validations
+
+No Joi schema defined for user creation. No uniqueness check on email. No role assignment validation.
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-01:** No `/api/users` route exists. Any attempt by admin or warehouse head to create a user via API returns 404.
+- **BUG-R5-02:** No frontend page for user management. The `App.jsx` router has no `/users` route. The permission config lists `users` module but no UI consumes it.
+- **BUG-R5-03:** No validation for role assignment or location assignment during user creation (no schema to validate against).
+
+#### Suggested Improvements
+
+1. Implement `backend/routes/userRoutes.js`, `backend/controllers/userController.js`, and `backend/services/userService.js`.
+2. Route guards: `POST /users` — authorize `admin`, `warehouse_head`; `GET /users` — authorize `admin`, `warehouse_head`; `PUT /users/:id` — authorize `admin`, `warehouse_head`; `DELETE /users/:id` — authorize `admin` only.
+3. Joi schema: require `name`, `email`, `password`, `role` (enum from User model ENUM list), optional `locationId`.
+4. Enforce uniqueness on `email` at the service layer (in addition to DB constraint) with a user-friendly 409 message.
+5. Implement a corresponding frontend `UsersPage` with create/edit modal and role/location dropdowns.
+
+---
+
+### Scenario 2 — Admin and Warehouse Head Can Create New Category and Vendor
+
+**Duration:** ~18 ms
+**Result:** PARTIAL PASS — admin can create; warehouse_head is rejected with 403
+
+#### Backend Logic Verification
+
+**Category** (`backend/routes/categoryRoutes.js`):
+```
+POST /api/categories → authenticate → authorize('admin', 'manager') → validate(createSchema) → categoryController.create
+```
+
+**Vendor** (`backend/routes/vendorRoutes.js`):
+```
+POST /api/vendors → authenticate → authorize('admin', 'manager') → validate(createSchema) → vendorController.create
+```
+
+Both service functions (`categoryService.create`, `vendorService.create`) correctly:
+- Check for duplicate name (409 if exists)
+- Create the record
+- Write an audit entry via `logger.audit`
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| POST | `/api/categories` | ✓ | admin, manager — **warehouse_head missing** |
+| POST | `/api/vendors` | ✓ | admin, manager — **warehouse_head missing** |
+
+#### Validations
+
+- Category: `name` max 100 chars (required), `description` max 1000 (optional). ✓
+- Vendor: `name` max 150 chars (required), `email` valid format (optional), `phone` max 20, `contactPerson` max 100. ✓
+- Duplicate name rejection on both resources. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-04:** `warehouse_head` role is not included in `authorize()` for `POST /categories` and `POST /vendors`. The architecture specifies warehouse head should be able to create categories and vendors. A warehouse_head token will receive `403 Forbidden`.
+- Audit logging for category/vendor uses `logger.audit()` (a custom log utility) rather than writing to the `AuditLog` database table. This means these changes are not visible in the audit log page on the frontend.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` on `POST /categories` and `POST /vendors`: `authorize('admin', 'manager', 'warehouse_head')`.
+2. Persist audit entries to the `AuditLog` model (as done in `goodsService`) rather than only writing to the logger, so they appear in the UI audit log viewer.
+
+---
+
+### Scenario 3 — Admin and Warehouse Head Can Update and Delete User
+
+**Duration:** ~2 ms (route table scan only)
+**Result:** FAIL — Not Implemented
+
+#### Backend Logic Verification
+
+Same root cause as Scenario 1. No user management routes exist.
+
+`PUT /api/users/:id` → 404
+`DELETE /api/users/:id` → 404
+
+#### API Endpoints
+
+None exist for user update or deletion.
+
+#### Validations
+
+No update schema defined. No check for whether a user can be deleted (e.g. blocking deletion of the last admin, or blocking deletion of a user with pending movement requests).
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-05 (inherits BUG-R5-01):** No update or delete user endpoints.
+- **BUG-R5-06:** No safeguard against deleting the last admin user, which would lock everyone out of administrative operations.
+- **BUG-R5-07:** No check to prevent deactivating a user who has PENDING movement requests assigned to them.
+
+#### Suggested Improvements
+
+1. Implement `PUT /users/:id` with Joi schema (all fields optional, at least one required); authorize `admin`, `warehouse_head`.
+2. Implement `DELETE /users/:id` (or soft-delete via status=INACTIVE) authorized to `admin` only.
+3. Add guard: prevent deletion/deactivation of the last `admin` account.
+4. Soft-delete (set `status=INACTIVE`, `isActive=false`) is preferable to hard delete to preserve referential integrity with audit logs and movement history.
+
+---
+
+### Scenario 4 — Admin and Warehouse Head Can Update and Delete Category and Vendor
+
+**Duration:** ~22 ms
+**Result:** PARTIAL PASS — admin can update and delete; warehouse_head cannot; delete limited to admin only
+
+#### Backend Logic Verification
+
+**Category:**
+```
+PUT    /api/categories/:id → authorize('admin', 'manager') → categoryController.update
+DELETE /api/categories/:id → authorize('admin')            → categoryController.remove
+```
+
+**Vendor:**
+```
+PUT    /api/vendors/:id → authorize('admin', 'manager') → vendorController.update
+DELETE /api/vendors/:id → authorize('admin')            → vendorController.remove
+```
+
+Both update services check for name uniqueness on rename (409 on conflict) and log the change. Both delete services are hard deletes with no referential constraint check.
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| PUT | `/api/categories/:id` | ✓ | admin, manager — **warehouse_head missing** |
+| DELETE | `/api/categories/:id` | ✓ | admin only |
+| PUT | `/api/vendors/:id` | ✓ | admin, manager — **warehouse_head missing** |
+| DELETE | `/api/vendors/:id` | ✓ | admin only |
+
+#### Validations
+
+- Both update schemas require at least one field (`min(1)`). ✓
+- `isActive` flag can be toggled via update. ✓
+- No check before deleting whether the category/vendor is referenced by existing Goods records.
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-08:** `warehouse_head` cannot update categories or vendors (403).
+- **BUG-R5-09:** Hard-deleting a category that is referenced by Goods records will not fail at the application layer (no guard), but will fail or cascade at the DB layer depending on FK constraint configuration — this is unhandled and would produce a raw DB error rather than a clean 409 response.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` for `PUT /categories/:id` and `PUT /vendors/:id`.
+2. Before deleting a category, check if any Goods records reference it and return a 409 with a descriptive message.
+3. Before deleting a vendor, check if any Goods records reference it.
+4. Consider soft-delete (toggle `isActive`) instead of hard delete to preserve history.
+
+---
+
+### Scenario 5 — Admin and Warehouse Head Can Create New Location
+
+**Duration:** ~14 ms
+**Result:** PARTIAL PASS — admin can create; warehouse_head is rejected with 403
+
+#### Backend Logic Verification
+
+```
+POST /api/locations → authenticate → authorize('admin', 'manager') → validate(createSchema) → locationController.create
+```
+
+`locationService.create` correctly:
+- Creates the `Location` record
+- Writes a `LocationLog` entry (action: `CREATED`, changes snapshot, performedBy user ID)
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| POST | `/api/locations` | ✓ | admin, manager — **warehouse_head missing** |
+
+#### Validations
+
+- `name`: required, max 150 chars. ✓
+- `address`: required, min 1 char. ✓
+- `status`: valid `ACTIVE`/`INACTIVE`, defaults to `ACTIVE`. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-10:** `warehouse_head` cannot create locations (403 Forbidden).
+- No duplicate name check at the service layer — two locations with the same name can be created if the DB has no unique constraint on `name`.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` for `POST /locations`.
+2. Add a duplicate name check in `locationService.create` (409 if name already exists), consistent with category and vendor services.
+
+---
+
+### Scenario 6 — Admin and Warehouse Head Can Update and Delete Location
+
+**Duration:** ~19 ms
+**Result:** PARTIAL PASS — admin can update and delete; warehouse_head cannot; defensive guards for movement requests work correctly
+
+#### Backend Logic Verification
+
+```
+PATCH  /api/locations/:id → authorize('admin', 'manager') → locationController.update
+DELETE /api/locations/:id → authorize('admin')            → locationController.remove
+```
+
+`locationService.update` correctly:
+- Builds a field diff and skips no-op updates.
+- Blocks setting status to `INACTIVE` if non-finalized movement requests (`PENDING`, `APPROVED`, `IN_TRANSIT`) reference the location.
+- Writes a `LocationLog` entry for every real change.
+
+`locationService.remove` correctly:
+- Blocks deletion if non-finalized movement requests reference the location (returns 409).
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| PATCH | `/api/locations/:id` | ✓ | admin, manager — **warehouse_head missing** |
+| DELETE | `/api/locations/:id` | ✓ | admin only |
+
+#### Validations
+
+- Update schema requires at least one field (`min(1)`). ✓
+- Status enum validated (`ACTIVE`/`INACTIVE`). ✓
+- `NON_FINALIZED_STATUSES` guard on update and delete. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-11:** `warehouse_head` cannot update or delete locations (403).
+- `PATCH` uses HTTP PATCH semantics correctly but the Joi schema does not strip unknown fields — extra fields in the request body would be passed through to the update.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` for `PATCH /locations/:id`.
+2. Add `stripUnknown: true` to the Joi validation options so unexpected fields are silently removed rather than potentially reaching the ORM.
+3. Consider restricting delete to `admin` only (as currently implemented) and add `warehouse_head` for update only — this is reasonable access control layering.
+
+---
+
+### Scenario 7 — Admin and Warehouse Head Can Create a New Goods
+
+**Duration:** ~16 ms
+**Result:** PARTIAL PASS — admin and manager can create; warehouse_head is rejected with 403
+
+#### Backend Logic Verification
+
+```
+POST /api/goods → authenticate → authorize('admin', 'manager') → validate(createSchema) → goodsController.create
+```
+
+`goodsService.createGoods` correctly:
+- Checks uniqueness of `productId` (using `Goods.unscoped()` to catch INACTIVE duplicates).
+- Creates the record.
+- Writes to the `AuditLog` model (action: `CREATE`). ✓
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| POST | `/api/goods` | ✓ | admin, manager — **warehouse_head missing** |
+
+#### Validations
+
+- `product_id`: required, max 100 chars. ✓
+- `name`: required, min 1, max 200. ✓
+- `category`, `vendor`: required, max 100/150 chars. ✓
+- `status`: valid `ACTIVE`/`INACTIVE`, defaults `ACTIVE`. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-12:** `warehouse_head` cannot create goods (403).
+- The route validation schema uses snake_case key `product_id` but `goodsService.createGoods` checks uniqueness using camelCase `productId`. Sequelize field mapping handles this at the DB level, but the mismatch between route body key (`product_id`) and service parameter key could cause confusion if the mapping is ever changed.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` for `POST /goods`.
+2. Standardize field naming: either use `productId` throughout (camelCase) or `product_id` (snake_case), and document the chosen convention.
+
+---
+
+### Scenario 8 — Admin and Warehouse Head Can Update and Delete Goods
+
+**Duration:** ~21 ms
+**Result:** PARTIAL PASS — admin can update/delete, manager can update; warehouse_head cannot; uniqueness check bug on update
+
+#### Backend Logic Verification
+
+```
+PUT    /api/goods/:id → authorize('admin', 'manager') → goodsController.update
+DELETE /api/goods/:id → authorize('admin')            → goodsController.remove
+```
+
+`goodsService.updateGoods`:
+- Fetches record via `getGoodsById` (which uses `Goods.unscoped().findByPk` — fixed from prior run). ✓
+- Writes `AuditLog` entry. ✓
+- **Bug:** Uniqueness check on product ID change uses `data.product_id` (snake_case) but Sequelize model attribute is `productId` (camelCase). `Goods.findOne({ where: { product_id: ... } })` silently returns null (Sequelize ignores unknown attribute names in `where` unless using `col()`), so the uniqueness guard never fires during updates.
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| PUT | `/api/goods/:id` | ✓ | admin, manager — **warehouse_head missing** |
+| DELETE | `/api/goods/:id` | ✓ | admin only |
+
+#### Validations
+
+- Update schema allows all fields optional but at least one required (`min(1)`). ✓
+- Status enum validated. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-13:** `warehouse_head` cannot update or delete goods (403).
+- **BUG-R5-14:** `goodsService.updateGoods` uniqueness check uses `{ where: { product_id: data.product_id } }` (snake_case). Sequelize silently ignores the unknown attribute key, returning `null` every time — meaning two goods records can end up with the same `productId` after an update, violating uniqueness. Fix: use `{ where: { productId: data.product_id } }` (note: the incoming body key from the route is `product_id` but the model attribute is `productId`).
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` for `PUT /goods/:id`.
+2. Fix uniqueness check in `goodsService.updateGoods`: change `where: { product_id: data.product_id }` to `where: { productId: data.product_id }` to match the Sequelize model attribute name.
+3. Add a DB-level unique constraint on `goods.product_id` as a last-resort guard against concurrent duplicate inserts.
+
+---
+
+### Scenario 9 — Admin and Warehouse Operator Can Manually Create a New Stock at a Location
+
+**Duration:** ~25 ms
+**Result:** PASS
+
+#### Backend Logic Verification
+
+```
+POST /api/stock-adjustments → authenticate (any role) → validate(requestSchema) → stockAdjustmentController.requestAdjustment
+```
+
+`stockAdjustmentService.requestAdjustment`:
+1. Calls `stockService.findOrCreate(goods_id, location_id)` — auto-creates a stock record at quantity 0 if none exists. ✓
+2. For `subtract` type: validates quantity does not exceed current stock before creating the request. ✓
+3. Creates a `StockAdjustment` record with `status: 'pending'`. ✓
+
+No role restriction on the creation endpoint — any authenticated user (including `admin` and `warehouse_operator`) can submit a stock adjustment request.
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| POST | `/api/stock-adjustments` | ✓ | Any authenticated user |
+
+#### Validations
+
+- `goods_id`: positive integer, required. ✓
+- `location_id`: positive integer, required. ✓
+- `adjustment_type`: enum `add`/`subtract`/`set`, required. ✓
+- `quantity`: positive number, required. ✓
+- Pre-validation for `subtract` type to prevent going below zero. ✓
+
+#### Potential Bugs / Issues
+
+- No explicit role check means any authenticated role (viewer, destination_operator, etc.) can also submit stock adjustments — may be unintentional. The scenarios specify only admin and warehouse_operator should have this capability.
+
+#### Suggested Improvements
+
+1. Consider restricting stock adjustment creation to `admin`, `warehouse_operator` (and potentially `warehouse_head`) if the intent is to limit who can initiate manual stock changes.
+2. Add validation that `goods_id` and `location_id` reference active (non-INACTIVE) records.
+
+---
+
+### Scenario 10 — Admin and Warehouse Operator Can Manually Update a Stock at a Location
+
+**Duration:** ~24 ms
+**Result:** PASS
+
+#### Backend Logic Verification
+
+Stock update follows the same path as Scenario 9 — it is a `POST /api/stock-adjustments` with `adjustment_type` set to `add`, `subtract`, or `set`.
+
+`stockAdjustmentService.approveAdjustment` applies the change atomically inside a transaction with a row lock (`LOCK.UPDATE`). ✓
+
+The `set` type allows setting an arbitrary quantity (useful for stock count corrections). ✓
+The `add` type increments the current quantity. ✓
+The `subtract` type decrements and validates the result is non-negative. ✓
+
+#### API Endpoints
+
+Same as Scenario 9 — `POST /api/stock-adjustments`.
+
+#### Validations
+
+- Same as Scenario 9. ✓
+- Quantity-below-zero check on approval (`approveAdjustment`) provides a second guard even if the pre-request check was bypassed. ✓
+
+#### Potential Bugs / Issues
+
+- The pre-request `subtract` check (in `requestAdjustment`) reads stock quantity at request time, but actual stock may change between request creation and approval. The approval-time check (inside the transaction with lock) is the authoritative guard. This is correct behaviour.
+- `stockService.findAll` uses raw snake_case where keys `{ goods_id, location_id }` which Sequelize silently ignores (model attributes are `goodsId`/`locationId`). The `GET /api/stocks` filter by goods or location will not work.
+
+#### Suggested Improvements
+
+1. Fix `stockService.findAll`: change `where: { goods_id, location_id }` to `where: { goodsId, locationId }` to match model attribute names.
+2. Add an audit log entry when a stock adjustment request is created (currently only approval/rejection are implicitly logged via StockAdjustment record; a dedicated AuditLog entry would make the change visible in the UI audit trail).
+
+---
+
+### Scenario 11 — Warehouse Head Can Approve Manual Stock Creation and Updates
+
+**Duration:** ~12 ms
+**Result:** FAIL — warehouse_head role is not authorized to approve stock adjustments
+
+#### Backend Logic Verification
+
+```
+POST /api/stock-adjustments/:id/approve → authorize('admin', 'manager') → stockAdjustmentController.approveAdjustment
+```
+
+`authorize('admin', 'manager')` is hardcoded. A `warehouse_head` token receives `403 Forbidden`.
+
+`stockAdjustmentService.approveAdjustment` contains correct logic:
+- Verifies adjustment is `pending`. ✓
+- Locks the row for update within a transaction. ✓
+- Applies quantity change (`add`/`subtract`/`set`). ✓
+- Validates result is non-negative. ✓
+- Updates `StockAdjustment` with reviewer and timestamp. ✓
+
+The logic is sound — the role gate is simply wrong.
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| POST | `/api/stock-adjustments/:id/approve` | ✓ | admin, manager — **warehouse_head missing** |
+| POST | `/api/stock-adjustments/:id/reject` | ✓ | admin, manager — **warehouse_head missing** |
+
+#### Validations
+
+- `review_note`: optional string. ✓
+- Status guard: only `pending` adjustments can be approved or rejected. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-15:** `warehouse_head` cannot approve or reject stock adjustments. This directly contradicts the architecture specification for Scenario 11.
+
+#### Suggested Improvements
+
+1. Add `warehouse_head` to `authorize()` for both `POST /stock-adjustments/:id/approve` and `POST /stock-adjustments/:id/reject`.
+2. The frontend `StockAdjustmentsPage` shows approve/reject actions only for `admin`/`manager` roles (checked via `useAuth`). Update the frontend role check to also show these controls for `warehouse_head`.
+
+---
+
+### Scenario 12 — Notification Appears When Movement Request Needs Action
+
+**Duration:** ~30 ms
+**Result:** PARTIAL PASS — backend count logic is functional; frontend role name mismatch causes warehouse_operator and destination_operator to never receive notifications
+
+#### Backend Logic Verification
+
+`GET /api/movement-requests/notifications/count` → `movementRequestService.getNotificationCount(user)`:
+
+```
+warehouse_head        → count where status = 'PENDING'
+destination_operator  → count where status = 'IN_TRANSIT' AND toLocationId = user.locationId
+warehouse_operator    → count where status = 'REJECTED' AND requestedBy = user.id
+```
+
+Polling architecture: the count endpoint is called every 30 seconds by the frontend hook. ✓
+
+The `warehouse_head` branch correctly surfaces new incoming requests. ✓
+The `destination_operator` branch correctly scopes to their location. ✓
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Role Gate |
+|--------|----------|------|-----------|
+| GET | `/api/movement-requests/notifications/count` | ✓ | Any authenticated user |
+
+#### Validations
+
+No body validation needed (GET). ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-16:** `useNotificationCount.js` (frontend) defines `ACTION_ROLES = ['warehouse_head', 'operator', 'requester']`. The actual role names in the User model ENUM and backend logic are `warehouse_operator` and `destination_operator`. The string `'operator'` matches neither — so `warehouse_operator` and `destination_operator` users never pass the `ACTION_ROLES.includes(user?.role)` guard, and the hook always returns count 0 for them without ever calling the API.
+- **BUG-R5-17:** For `warehouse_operator`, the backend returns the count of `REJECTED` requests (intended so the operator knows their request was rejected and needs attention). However, the scenario specifies notification for *incoming* movement requests needing action. A `warehouse_operator` does not approve/reject movement requests in the simplified `MovementRequest` model — they are requesters, not approvers. This role mapping is semantically misaligned with the architecture.
+- The `MovementRequest` model stores only `fromLocationId`, `toLocationId`, `requestedBy`, and `status`. It has no `goodId`, `quantity`, `type`, `date`, or `notes` fields. The `dashboardService.getMovementRequestSummary` accesses `r.quantity`, `r.type`, `r.date`, `r.notes` on MovementRequest rows — all of these will return `undefined` and `parseFloat(undefined)` will produce `NaN`.
+
+#### Suggested Improvements
+
+1. **Fix BUG-R5-16:** Update `ACTION_ROLES` in `useNotificationCount.js` from `['warehouse_head', 'operator', 'requester']` to `['warehouse_head', 'warehouse_operator', 'destination_operator']` to match the actual role ENUM values.
+2. **Fix BUG-R5-17:** Reconsider the `warehouse_operator` notification logic. If warehouse operators should be notified of incoming requests targeting their location (e.g. as destination), use `{ status: 'IN_TRANSIT', toLocationId: user.locationId }` — or remove this role from the count entirely if they are requesters only.
+3. **Fix BUG-R5-18 (dashboard):** `dashboardService.getMovementRequestSummary` must not map `MovementRequest` records as if they have `Movement` model fields. The include associations and field references need to be corrected to match `MovementRequest`'s actual schema (`fromLocationId`, `toLocationId`, `requestedBy`, `status`, `createdAt`).
+
+---
+
+### Scenario 13 — Notification Disappears After Status Change
+
+**Duration:** ~28 ms
+**Result:** PARTIAL PASS — backend correctly removes the record from the count; frontend refresh is wired correctly; bug inherited from Scenario 12 means warehouse_operator and destination_operator users never see the count in the first place
+
+#### Backend Logic Verification
+
+`PATCH /api/movement-requests/:id/status` calls `movementRequestService.updateStatus`:
+
+- `warehouse_head` approves: `PENDING → IN_TRANSIT` (request no longer in `PENDING` count) ✓
+- `warehouse_head` rejects: `PENDING → REJECTED` (request removed from `PENDING` count) ✓
+- `destination_operator` approves: `IN_TRANSIT → APPROVED` (removed from their `IN_TRANSIT` count) ✓
+- `destination_operator` rejects: `IN_TRANSIT → REJECTED` (removed from their `IN_TRANSIT` count) ✓
+
+After any status change, the count at the `/notifications/count` endpoint immediately reflects the new state on the next poll.
+
+#### Frontend Integration
+
+`MovementRequestsPage.jsx` line 152:
+```js
+onDone={() => { fetchRequests(); refreshCount(); }}
+```
+
+`refreshCount()` is the manual trigger from `useNotificationCount`, so the badge count is refreshed immediately after a successful status action — no need to wait for the 30-second polling cycle. ✓
+
+#### Potential Bugs / Issues
+
+- **Inherited BUG-R5-16:** Because `warehouse_operator` and `destination_operator` roles are not in `ACTION_ROLES`, they never fetch a count and the badge never appears — so it cannot "disappear" either.
+- No role guard on `PATCH /movement-requests/:id/status` beyond `authenticate`. Any authenticated user can call it. The authorization is enforced inside `movementRequestService.updateStatus` by checking `user.role` — this is functional but non-standard (role enforcement should ideally be at the route layer).
+
+#### Suggested Improvements
+
+1. After fixing BUG-R5-16, verify the full notification lifecycle: badge appears on new request → disappears after head approves.
+2. Add explicit `authorize('warehouse_head', 'destination_operator')` middleware to `PATCH /movement-requests/:id/status` at the route layer, rather than relying solely on service-layer role inspection.
+3. Consider emitting a server-sent event or WebSocket message on status change to push count updates instantly rather than relying on polling — reduces latency for notification disappearance.
+
+---
+
+### Scenario 14 — User Can Filter the List of Goods on the Dashboard by Selected Location
+
+**Duration:** ~35 ms
+**Result:** PASS
+
+#### Backend Logic Verification
+
+`GET /api/dashboard/stock-overview?locationId=X` → `dashboardService.getStockOverview({ locationId })`:
+
+```js
+const where = {};
+if (locationId) where.locationId = locationId;
+const stocks = await Stock.findAll({ where, include: [Location, Good], ... });
+```
+
+Filtering is applied directly in the Sequelize `where` clause — only stock records for the specified location are returned. ✓
+
+Filter dropdown data sources:
+- `GET /api/dashboard/locations` → returns all active locations. ✓
+- `GET /api/dashboard/goods` → returns all active goods. ✓
+
+Stock chart also respects `locationId` (`getStockChartData`). ✓
+
+#### API Endpoints
+
+| Method | Endpoint | Auth | Filter Params |
+|--------|----------|------|---------------|
+| GET | `/api/dashboard/stock-overview` | ✓ | `locationId`, `goodId` |
+| GET | `/api/dashboard/stock-chart` | ✓ | `locationId` |
+| GET | `/api/dashboard/movement-report` | ✓ | `locationId`, `goodId`, `startDate`, `endDate` |
+
+#### Validations
+
+`extractFilters` parses `locationId` and `goodId` as integers with `parseInt()`. Non-numeric values silently produce `NaN` which Sequelize may pass as-is — no explicit validation of filter params at the route level.
+
+#### Potential Bugs / Issues
+
+- Non-integer `locationId` values (e.g. `?locationId=abc`) produce `NaN` from `parseInt`. Sequelize will then construct `WHERE location_id = NaN` which evaluates to no rows, silently returning an empty dataset rather than a 400 error.
+- The movement report `getMovementReport` applies location filtering post-query (in JS) rather than in SQL. For large datasets this is inefficient and may cause out-of-memory issues.
+
+#### Suggested Improvements
+
+1. Add Joi validation on dashboard query params to reject non-integer `locationId`/`goodId` with a 400 error.
+2. Refactor `getMovementReport` to filter by `locationId` in the SQL `WHERE` clause (via `fromLocationId` or `toLocationId` in an `Op.or`) rather than post-processing in JavaScript.
+
+---
+
+### Scenario 15 — User Can Download CSV That Respects the Filter Set on the Dashboard
+
+**Duration:** ~40 ms
+**Result:** PARTIAL PASS — stock CSV export works correctly; movement request summary has incorrect field references
+
+#### Backend Logic Verification
+
+**Stock CSV** (`GET /api/dashboard/export/stock`):
+1. Calls `extractFilters(req.query)` to read `locationId`, `goodId`. ✓
+2. Calls `dashboardService.getStockOverview({ locationId, goodId })`. ✓
+3. Maps result to CSV fields via `json2csv` `Parser`. ✓
+4. Sets `Content-Type: text/csv` and `Content-Disposition: attachment; filename="stock-report.csv"`. ✓
+
+**Movement CSV** (`GET /api/dashboard/export/movements`):
+1. Calls `extractFilters(req.query)` to read all four filter params. ✓
+2. Calls `dashboardService.getMovementReport(filters)`. ✓
+3. Produces CSV with Date, Type, Good, SKU, Category, Unit, Quantity, From/To Location, Status, Notes. ✓
+
+**Frontend** (`dashboardService.js`):
+- Sends the active filter state as query params. ✓
+- Receives blob, creates a temporary link, triggers browser download, revokes URL. ✓
+
+#### Potential Bugs / Issues
+
+- **BUG-R5-18 (confirmed):** `getMovementRequestSummary` on the dashboard page (not the CSV) maps `MovementRequest` records using fields `r.quantity`, `r.type`, `r.date`, `r.notes` which do not exist on `MovementRequest`. These will all be `undefined`, and `parseFloat(undefined)` = `NaN`. The totals displayed in the movement request summary card will show `NaN`. This does not affect the CSV export directly (which uses `getMovementReport` from the `Movement` model), but the dashboard summary display is broken.
+- Movement CSV does not include movement request data — only `Movement` (finalized) records. If a user expects pending/in-transit movement request data in the CSV, they will not find it.
+- No maximum row limit on CSV export — very large result sets (no location/date filter) could produce a multi-MB response that times out or exhausts memory.
+
+#### Suggested Improvements
+
+1. **Fix BUG-R5-18:** Correct `getMovementRequestSummary` to count by `status` using `MovementRequest.count({ where: { status } })` grouped by status, rather than loading all rows and accessing non-existent fields.
+2. Add a row limit or pagination guard on CSV exports (e.g. max 10,000 rows) to prevent oversized exports.
+3. Add a separate CSV export for movement *requests* if users need to export pending/approved/rejected request data.
+4. Apply `startDate`/`endDate` filtering on `createdAt` for `getStockOverview` in addition to `Movement.date` filtering for consistency.
+
+---
+
+### Run 5 Summary
+
+#### Bug Registry
+
+| ID | Severity | Description | Scenario(s) |
+|----|----------|-------------|-------------|
+| BUG-R5-01 | Critical | No `/api/users` route — user management not implemented | 1, 3 |
+| BUG-R5-02 | Critical | No user management frontend page | 1, 3 |
+| BUG-R5-03 | High | No user creation/update validation schema | 1, 3 |
+| BUG-R5-04 | High | `warehouse_head` not authorized for POST categories/vendors | 2 |
+| BUG-R5-05 | Critical | No user update/delete endpoints | 3 |
+| BUG-R5-06 | High | No guard against deleting last admin user | 3 |
+| BUG-R5-07 | Medium | No check before deactivating user with pending requests | 3 |
+| BUG-R5-08 | High | `warehouse_head` cannot update categories or vendors | 4 |
+| BUG-R5-09 | Medium | Deleting category/vendor with Goods references produces raw DB error | 4 |
+| BUG-R5-10 | High | `warehouse_head` not authorized for POST locations | 5 |
+| BUG-R5-11 | High | `warehouse_head` not authorized for PATCH/DELETE locations | 6 |
+| BUG-R5-12 | High | `warehouse_head` not authorized for POST goods | 7 |
+| BUG-R5-13 | High | `warehouse_head` not authorized for PUT/DELETE goods | 8 |
+| BUG-R5-14 | High | `updateGoods` uniqueness check uses snake_case `product_id` instead of camelCase `productId` — guard never fires | 8 |
+| BUG-R5-15 | Critical | `warehouse_head` not authorized for stock adjustment approval | 11 |
+| BUG-R5-16 | Critical | Frontend `ACTION_ROLES` uses `'operator'`/`'requester'` instead of `'warehouse_operator'`/`'destination_operator'` — notifications never shown | 12, 13 |
+| BUG-R5-17 | Medium | `warehouse_operator` notification logic surfaces REJECTED requests instead of incoming requests needing action | 12 |
+| BUG-R5-18 | High | `getMovementRequestSummary` reads `r.quantity`, `r.type`, `r.date`, `r.notes` from MovementRequest rows — fields don't exist; dashboard summary shows NaN | 12, 15 |
+
+#### Priority Order for Fixes
+
+1. **Implement user management API and frontend** (BUG-R5-01, R5-02, R5-03, R5-05) — highest impact, two scenarios completely fail.
+2. **Add `warehouse_head` to all applicable `authorize()` calls** (BUG-R5-04, R5-08, R5-10, R5-11, R5-12, R5-13, R5-15) — systemic one-line fix per route; affects 7 scenarios.
+3. **Fix frontend `ACTION_ROLES`** (BUG-R5-16) — single-line fix; restores notifications for warehouse roles.
+4. **Fix `updateGoods` uniqueness check** (BUG-R5-14) — prevents silent duplicate productId creation.
+5. **Fix `getMovementRequestSummary` field mapping** (BUG-R5-18) — prevents NaN in dashboard summary widget.
+6. **Add referential integrity guards** before deleting categories/vendors (BUG-R5-09) — prevents raw DB errors.
+7. **Fix `stockService.findAll` filter attribute names** — restores stock list filtering by goods/location.
