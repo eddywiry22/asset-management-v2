@@ -1,12 +1,10 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import useNotificationCount from '@/hooks/useNotificationCount';
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: '▦' },
-  // Add more nav items here as modules are built:
-  // { to: '/assets', label: 'Assets', icon: '◫' },
-  // { to: '/categories', label: 'Categories', icon: '⊞' },
-  // { to: '/reports', label: 'Reports', icon: '◈' },
+  { to: '/movement-requests', label: 'Movements', icon: '⇄' },
 ];
 
 const ADMIN_NAV_ITEMS = [
@@ -14,8 +12,20 @@ const ADMIN_NAV_ITEMS = [
   // { to: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
+function NavBadge({ count }) {
+  if (!count) return null;
+  return (
+    <span className="ml-auto flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-bold text-white">
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
 export default function Sidebar({ isOpen, onClose }) {
   const { user, logout } = useAuth();
+  const { count: notificationCount } = useNotificationCount();
+
+  const badgeFor = (to) => (to === '/movement-requests' ? notificationCount : 0);
 
   return (
     <>
@@ -63,6 +73,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 >
                   <span aria-hidden="true">{icon}</span>
                   {label}
+                  <NavBadge count={badgeFor(to)} />
                 </NavLink>
               </li>
             ))}

@@ -26,9 +26,14 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       role: {
-        type: DataTypes.ENUM('admin', 'manager', 'viewer'),
+        type: DataTypes.ENUM('admin', 'manager', 'viewer', 'warehouse_head', 'operator', 'requester'),
         allowNull: false,
         defaultValue: 'viewer',
+      },
+      location_id: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        defaultValue: null,
       },
       isActive: {
         type: DataTypes.BOOLEAN,
@@ -69,9 +74,8 @@ module.exports = (sequelize, DataTypes) => {
     return bcrypt.compare(plaintext, this.password);
   };
 
-  // Associations placeholder
-  User.associate = (_models) => {
-    // e.g. User.hasMany(models.Asset, { foreignKey: 'userId' });
+  User.associate = (models) => {
+    User.hasMany(models.MovementRequest, { foreignKey: 'requester_id', as: 'movementRequests' });
   };
 
   return User;
