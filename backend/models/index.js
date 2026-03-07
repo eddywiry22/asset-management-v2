@@ -27,6 +27,7 @@ db.MovementRequest = require('./MovementRequest')(sequelize, Sequelize.DataTypes
 db.Item = require('./Item')(sequelize, Sequelize.DataTypes);
 db.MovementHeader = require('./MovementHeader')(sequelize, Sequelize.DataTypes);
 db.MovementDetail = require('./MovementDetail')(sequelize, Sequelize.DataTypes);
+db.Movement = require('./Movement')(sequelize, Sequelize.DataTypes);
 
 // Define associations
 Object.values(db).forEach((model) => {
