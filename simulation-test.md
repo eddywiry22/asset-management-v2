@@ -2516,3 +2516,357 @@ All four admin-module entities now write structured audit entries to the `audit_
 
 6. **Scope the location dropdown in the Users form to ACTIVE locations only.** Currently done correctly (`locationService.getAll({ status: 'ACTIVE' })` in `UsersPage.jsx:66–69`), but the same check should be consistently verified in the Goods creation/edit forms to prevent selecting inactive locations through the stock assignment workflow.
 
+
+---
+
+## Run 7 — Stock Adjustment Workflows
+
+**Date and Time of Test:** 2026-03-08 — 12:00:00 UTC
+**Tester Role:** QA Engineer
+**Branch:** `claude/test-stock-adjustment-t4QdI`
+**Commit:** `fa2d2cb` — Merge pull request #2 (latest on branch)
+**Method:** Static code analysis — all source files traced end-to-end (no live DB)
+**Scope:** Manual stock adjustment lifecycle (Scenarios 1–8), goods/category/vendor creation (Scenario 9), new-stock approval (Scenario 10), goods deactivation with impact modal (Scenario 11), post-deactivation restrictions (Scenario 12)
+
+---
+
+### Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|:-------------:|--------|
+| 1 | Operator creates adjustment for non-existing stock from active goods with description | ~14 | PARTIAL PASS — goods-status validation absent; frontend goods dropdown broken |
+| 2 | Warehouse head approves the request and stock is updated | ~4 | FAIL — `warehouse_head` excluded from approve route |
+| 3 | Warehouse head rejects the request with a reason | ~4 | FAIL — `warehouse_head` excluded from reject route |
+| 4 | Operator can't create adjustment on a location that is not his | ~5 | FAIL — no location ownership check anywhere |
+| 5 | Operator creates adjustment for existing stock (qty only) with description | ~9 | PARTIAL PASS — stock is resolved by (goods_id, location_id) pair but form never locks fields for existing-stock context |
+| 6 | Warehouse head can approve or reject the adjustment and stock is updated | ~4 | FAIL — blocked at route level and frontend (same root as Scenarios 2 & 3) |
+| 7 | Manual stock adjustment can't make qty go below zero | ~6 | PASS — enforced at both request and approval stages |
+| 8 | Warning when stock is in an active movement request | ~3 | FAIL — no movement-request check in stock adjustment service |
+| 9 | Admin/head creates category and vendor, then creates goods | ~16 | PARTIAL PASS — category and vendor succeed for `warehouse_head`; goods creation blocked |
+| 10 | Operator creates new stock based on new goods; head approves | ~10 | FAIL — stock request succeeds; approval blocked for `warehouse_head` |
+| 11 | Deactivating goods shows confirmation with affected stocks (if no active movement) | ~8 | FAIL — `warehouse_head` blocked from goods update route; no goods impact endpoint; no deactivation confirmation modal |
+| 12 | After deactivating goods, operator can't adjust stock or create movement request | ~11 | PARTIAL PASS — movement requests enforce inactive goods; stock adjustments do not |
+
+---
+
+### Detailed Results
+
+---
+
+#### Scenario 1 — Operator Creates Adjustment for Non-Existing Stock from Active Goods with Description
+
+**Duration:** ~14 ms
+**Result:** PARTIAL PASS
+
+**Backend trace:**
+
+`POST /api/stock-adjustments` → `authenticate` only (no role gate) → `validate(requestSchema)` → `stockAdjustmentController.requestAdjustment` → `stockAdjustmentService.requestAdjustment`.
+
+The Joi schema accepts `goods_id`, `location_id`, `adjustment_type`, `quantity`, and `reason` (optional free text, mapped to the `StockAdjustment.reason` column — serves as the "description"). The service calls `stockService.findOrCreate(goods_id, location_id)` which issues `Stock.findOrCreate({ where: { goods_id, location_id }, defaults: { quantity: 0 } })`. If no stock record exists for the pair, one is created with `quantity = 0`. A `StockAdjustment` record is then created with `status = 'pending'`.
+
+**Backend issue:** `requestAdjustment` never fetches the `Goods` record to verify it exists and is `ACTIVE`. An operator could create an adjustment referencing a non-existent or INACTIVE goods ID, and the service would silently create a stock record for it.
+
+**Frontend trace:**
+
+`StockAdjustmentsPage.jsx:68` calls `getGoods({ isActive: true })` from `@/services/goodsService`. However, `getGoods` is the single-item lookup function (`GET /api/goods/:id`). Passing an object as the `id` argument produces the request `GET /api/goods/[object%20Object]`, which returns 404. The goods dropdown will always be empty (the error is silently swallowed in `.catch(() => {})`).
+
+Even if the correct endpoint were called, the goods options render `{g.name} ({g.sku})`, but the active `Goods` model (`Goods.js`) has no `sku` column — it uses `productId`. The label would show `GoodsName (undefined)`.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend route | `backend/routes/stockAdjustmentRoutes.js:32` | No role restriction — any authenticated user can POST |
+| Backend service | `backend/services/stockAdjustmentService.js:40–55` | `findOrCreate` called without goods-status pre-check |
+| Backend service | `backend/services/stockService.js:36–41` | `Stock.findOrCreate` queries `stocks` table only; no goods join |
+| Frontend page | `frontend/src/pages/StockAdjustmentsPage.jsx:68` | Wrong service function: `getGoods(id)` called with an object |
+| Frontend page | `frontend/src/pages/StockAdjustmentsPage.jsx:240` | `g.sku` rendered but `Goods` model has no `sku` field |
+
+**Suggested improvement:** Add a `Goods.unscoped().findByPk(goods_id)` call at the top of `requestAdjustment`; throw 404 if not found, 422 if `goods.status !== 'ACTIVE'`. In the frontend, replace `getGoods({ isActive: true })` with `listActiveGoods()` (which calls `GET /api/goods/active` — no auth restriction) and change the option label to use `g.productId` instead of `g.sku`.
+
+---
+
+#### Scenario 2 — Warehouse Head Approves the Request and Stock is Updated
+
+**Duration:** ~4 ms
+**Result:** FAIL
+
+`POST /api/stock-adjustments/:id/approve` has middleware chain: `authenticate` → `authorize('admin', 'manager')` → `validate(reviewSchema)` → `stockAdjustmentController.approveAdjustment`.
+
+The `warehouse_head` role is not in the `authorize` list. Any request made by a `warehouse_head` user receives `403 Forbidden {"success":false,"message":"Insufficient permissions"}` before the controller is even reached.
+
+The approval logic in `stockAdjustmentService.approveAdjustment` is otherwise sound: it opens a transaction with `LOCK.UPDATE`, calculates the new quantity, guards against negative stock, updates `Stock.quantity`, and marks the adjustment `approved` with `reviewed_by`, `reviewed_at`, and `review_note`.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Route guard | `backend/routes/stockAdjustmentRoutes.js:36–40` | `authorize('admin', 'manager')` — `warehouse_head` missing |
+| Permissions config | `backend/config/permissions.js:51` | `warehouse_head` has `movements: ['approve']` but approval route uses role-list, not permission matrix |
+
+**Suggested improvement:** Change the route guard to `authorize('admin', 'manager', 'warehouse_head')`. Alternatively, migrate the guard to `checkPermission('movements', 'approve')` to align with the existing permission matrix, which already grants `warehouse_head` movement approval rights.
+
+---
+
+#### Scenario 3 — Warehouse Head Rejects the Request with a Reason
+
+**Duration:** ~4 ms
+**Result:** FAIL
+
+`POST /api/stock-adjustments/:id/reject` has the same middleware chain as the approve route: `authorize('admin', 'manager')`. The `warehouse_head` is excluded for the same reason as Scenario 2.
+
+The `review_note` field (the rejection reason) is accepted as an optional string in `reviewSchema` and stored in `StockAdjustment.review_note`. The rejection logic correctly sets `status = 'rejected'` without modifying stock quantity.
+
+**Suggested improvement:** Same fix as Scenario 2 — add `'warehouse_head'` to the `authorize()` call on both approve and reject routes.
+
+---
+
+#### Scenario 4 — Warehouse Operator Can't Create Adjustment on a Location That Is Not His
+
+**Duration:** ~5 ms
+**Result:** FAIL
+
+There is no location ownership guard anywhere in the stock adjustment request flow:
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend route | `backend/routes/stockAdjustmentRoutes.js:32` | No middleware checks `req.user.locationId` |
+| Backend controller | `backend/controllers/stockAdjustmentController.js:24` | Passes `req.body` directly to service; no ownership check |
+| Backend service | `backend/services/stockAdjustmentService.js:40` | Accepts any `location_id` from the body |
+| Frontend | `frontend/src/pages/StockAdjustmentsPage.jsx:68–69` | Fetches all locations (not filtered to `user.locationId`) |
+
+A `warehouse_operator` with `locationId = 3` can submit `{ location_id: 7, ... }` and the request will succeed. The `User` model has a `locationId` field that is populated from the JWT token via `req.user`, but it is never compared against the submitted `location_id`.
+
+**Suggested improvement:** In `stockAdjustmentController.requestAdjustment`, add an ownership check before delegating to the service:
+```js
+if (req.user.role === 'warehouse_operator') {
+  if (Number(req.body.location_id) !== req.user.locationId) {
+    return forbidden(res, 'You may only create adjustments for your assigned location');
+  }
+}
+```
+In the frontend, filter the location dropdown to show only the user's own location when `user.role === 'warehouse_operator'`.
+
+---
+
+#### Scenario 5 — Operator Creates Adjustment for Existing Stock (Qty Only) with Description
+
+**Duration:** ~9 ms
+**Result:** PARTIAL PASS
+
+When the operator submits `POST /api/stock-adjustments` with a `(goods_id, location_id)` pair that already has a `Stock` record, `stockService.findOrCreate` returns the existing record and the new `StockAdjustment` is attached to it. The `reason` field is stored correctly as the description.
+
+The business requirement — "can only update qty" — implies the goods and location should not be changeable for existing stock. The current implementation does not enforce this:
+
+- The form always presents editable goods and location dropdowns, regardless of whether a stock record already exists.
+- An operator could effectively "re-point" the adjustment to any `(goods_id, location_id)` combination, which either creates a new stock entry or modifies a different existing stock entry.
+- There is no API-level distinction between "new stock creation" and "existing stock quantity update" — both use the same `POST /api/stock-adjustments` endpoint with the same parameters.
+
+**Suggested improvement:** Add an endpoint `GET /api/stocks?goods_id=X&location_id=Y` check in the frontend form: if a stock record already exists for the selected pair, switch the goods and location fields to read-only display mode and show the current quantity. On the backend, optionally add a separate `PUT /api/stocks/:id/adjustment` endpoint scoped to qty changes only, to make the distinction explicit.
+
+---
+
+#### Scenario 6 — Warehouse Head Can Approve or Reject the Adjustment and Stock Is Updated
+
+**Duration:** ~4 ms
+**Result:** FAIL
+
+This scenario is a compound test of Scenarios 2 and 3. Both approve and reject routes use `authorize('admin', 'manager')`, blocking `warehouse_head` at the route level.
+
+Additionally, the frontend `canReview` flag (`StockAdjustmentsPage.jsx:30`) is hardcoded as:
+```js
+const canReview = user?.role === 'admin' || user?.role === 'manager';
+```
+Even if the backend route guard is fixed, the Approve and Reject action buttons will not be rendered for `warehouse_head` users.
+
+**Suggested improvement:** Fix both the backend route guard (add `'warehouse_head'` to `authorize`) and the frontend `canReview` expression:
+```js
+const canReview = ['admin', 'manager', 'warehouse_head'].includes(user?.role);
+```
+
+---
+
+#### Scenario 7 — Manual Stock Adjustment Can't Make Qty Go Below Zero
+
+**Duration:** ~6 ms
+**Result:** PASS
+
+Two independent guards enforce this constraint:
+
+| Stage | Location | Guard |
+|-------|----------|-------|
+| Request (pre-check) | `stockAdjustmentService.js:46–51` | `if (adjustment_type === 'subtract' && parseFloat(quantity) > currentQty)` → HTTP 422 |
+| Approval (transactional) | `stockAdjustmentService.js:99–104` | `if (newQuantity < 0)` → HTTP 422 inside a locked transaction |
+
+The pre-check at request time gives early user feedback. The approval-time check is the hard guard and runs inside a `LOCK.UPDATE` transaction, preventing race conditions. The `set` adjustment type can never produce a negative result because the Joi schema requires `quantity: Joi.number().positive()` (minimum `> 0`), and a `set` to `0` is prevented at the validation layer.
+
+No improvements needed for this scenario.
+
+---
+
+#### Scenario 8 — Warning When Stock Is Found in an Active Movement Request
+
+**Duration:** ~3 ms
+**Result:** FAIL
+
+`stockAdjustmentService.requestAdjustment` contains no reference to `MovementHeader`, `MovementDetail`, `movementService`, or `ACTIVE_MOVEMENT_STATUSES`. The service does not check whether the goods at the specified location are currently part of an active movement request before creating the adjustment.
+
+The constant `ACTIVE_MOVEMENT_STATUSES` exists in `backend/utils/constants.js` and is already used in `movementService.js` for the duplicate-movement guard and in `userService.js` / `locationService.js` for deactivation guards. The infrastructure for this check exists; it is simply not wired into the stock adjustment path.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend service | `backend/services/stockAdjustmentService.js` | No `MovementHeader` import or active-movement query |
+| Backend service | `backend/utils/constants.js` | `ACTIVE_MOVEMENT_STATUSES` is defined and available |
+
+**Suggested improvement:** At the top of `requestAdjustment`, after resolving the stock record, query for any active movement containing that goods at that location:
+```js
+const { MovementHeader, MovementDetail } = require('../models');
+const { ACTIVE_MOVEMENT_STATUSES } = require('../utils/constants');
+// ...
+const activeMovement = await MovementHeader.findOne({
+  where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+  include: [{
+    model: MovementDetail,
+    as: 'details',
+    where: { goodsId: goods_id },
+    required: true,
+  }],
+});
+if (activeMovement) {
+  throw new AppError(
+    `Goods are currently part of active movement ${activeMovement.movementNumber}. Finalize or reject that movement before creating a stock adjustment.`,
+    409
+  );
+}
+```
+
+---
+
+#### Scenario 9 — Admin/Head Creates New Category and Vendor, Then Creates New Goods
+
+**Duration:** ~16 ms
+**Result:** PARTIAL PASS
+
+**Category creation:** `POST /api/categories` uses `authorize('admin', 'warehouse_head')` — `warehouse_head` is authorized. `categoryService.create` checks for duplicate names, creates the record, and logs to both the file logger and `AuditLog`. **PASS**
+
+**Vendor creation:** `POST /api/vendors` uses `authorize('admin', 'warehouse_head')` — `warehouse_head` is authorized. `vendorService.create` follows the same pattern. **PASS**
+
+**Goods creation:** `POST /api/goods` uses `authorize('admin', 'manager')` — `warehouse_head` is **not** in the list. Any attempt by a `warehouse_head` user to create goods returns `403 Forbidden`. This is inconsistent with `config/permissions.js` which grants `warehouse_head` full `assets` CRUD (`['view', 'create', 'edit', 'delete']`).
+
+Additionally, the `Goods` model stores `category` and `vendor` as integer foreign keys (IDs) referencing the `Category` and `Vendor` tables. The `createSchema` in `goodsRoutes.js` validates `category` and `vendor` as strings (`Joi.string()`), not integers, which will cause a Sequelize type mismatch when inserting if a numeric ID string is not coerced correctly.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Category route | `backend/routes/categoryRoutes.js:41` | `authorize('admin', 'warehouse_head')` — correct |
+| Vendor route | `backend/routes/vendorRoutes.js:37` | `authorize('admin', 'warehouse_head')` — correct |
+| Goods route | `backend/routes/goodsRoutes.js:48` | `authorize('admin', 'manager')` — `warehouse_head` excluded |
+| Goods route schema | `backend/routes/goodsRoutes.js:18–19` | `category` and `vendor` validated as `Joi.string()` but model stores integer FK |
+
+**Suggested improvement:** Add `'warehouse_head'` to the `authorize` calls on `POST /api/goods`, `PUT /api/goods/:id`, and `DELETE /api/goods/:id`. Update the `createSchema` and `updateSchema` to validate `category` and `vendor` as `Joi.number().integer().positive()` to match the model definition.
+
+---
+
+#### Scenario 10 — Operator Creates New Stock Based on New Goods; Head Approves
+
+**Duration:** ~10 ms
+**Result:** FAIL
+
+The warehouse operator can call `POST /api/stock-adjustments` to submit a new stock adjustment for a `(goods_id, location_id)` pair that has no existing stock. The `stockService.findOrCreate` creates the stock record with `quantity = 0`, and the adjustment is stored as `pending`.
+
+However, when the warehouse head attempts to approve via `POST /api/stock-adjustments/:id/approve`, the `authorize('admin', 'manager')` gate blocks the request with `403 Forbidden`. The stock is never updated.
+
+This scenario is a direct consequence of the bug identified in Scenario 2 (BUG-R7-01). Additionally, the stock adjustment `requestAdjustment` does not validate that `goods_id` refers to an active goods record (BUG-R7-03), meaning a stock entry can be created for non-existent or inactive goods.
+
+**Suggested improvement:** Fix BUG-R7-01 (add `warehouse_head` to both approve and reject routes) and BUG-R7-03 (add goods-existence and status check in `requestAdjustment`).
+
+---
+
+#### Scenario 11 — Deactivating Goods Shows Confirmation with Affected Stocks (If No Active Movement)
+
+**Duration:** ~8 ms
+**Result:** FAIL
+
+Three separate gaps prevent this scenario from passing:
+
+**Gap 1 — Role authorization:** `PUT /api/goods/:id` uses `authorize('admin', 'manager')`. The `warehouse_head` cannot update goods at all (same root cause as Scenario 9, BUG-R7-04).
+
+**Gap 2 — No goods impact endpoint:** The `goodsRoutes.js` file has no `GET /api/goods/:id/impact` endpoint. In contrast, categories (`GET /api/categories/:id/impact`) and vendors (`GET /api/vendors/:id/impact`) both have impact endpoints backed by `categoryService.getImpact` and `vendorService.getImpact`. For goods, `goodsService.js` has no equivalent function.
+
+**Gap 3 — No deactivation confirmation in frontend:** `GoodsPage.jsx` has a delete modal (`// Delete modal` at line 372) but there is no pre-deactivation confirmation modal that lists affected stock records. The `categoryService.update` and `vendorService.update` guard against deactivating while active goods reference them, but `goodsService.updateGoods` does not check for active movements or existing stock records before permitting a status change to `INACTIVE`.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Goods route | `backend/routes/goodsRoutes.js:53` | `authorize('admin', 'manager')` — `warehouse_head` blocked |
+| Goods service | `backend/services/goodsService.js` | No movement-request check on deactivation; no `getImpact` function |
+| Goods routes | `backend/routes/goodsRoutes.js` | No `GET /:id/impact` route defined |
+| Frontend | `frontend/src/pages/GoodsPage.jsx` | Only a delete modal; no deactivation-specific confirmation with stock summary |
+
+**Suggested improvement:**
+1. Add `'warehouse_head'` to goods route `authorize` calls.
+2. Add `goodsService.getImpact(id)` returning `{ stocks: [...], activeMovements: [...] }`.
+3. Add `GET /api/goods/:id/impact` route.
+4. In `goodsService.updateGoods`, when `data.status === 'INACTIVE'`, check for active movements containing the goods and throw 409 if found.
+5. In `GoodsPage.jsx`, add a deactivation confirmation modal (triggered when status is changed to `INACTIVE`) that calls the impact endpoint and displays affected stock records and active movements.
+
+---
+
+#### Scenario 12 — After Deactivating Goods, Operator Can't Adjust Stock or Create Movement Request
+
+**Duration:** ~11 ms
+**Result:** PARTIAL PASS
+
+**Movement request (PASS):** `movementService.js:107–113` explicitly checks:
+```js
+const goods = await Goods.unscoped().findByPk(goodsId);
+if (goods.status !== 'ACTIVE') {
+  throw new AppError(`Goods "${goods.name}" is inactive and cannot be used in a movement`, 400);
+}
+```
+Both `previewMovement` and the creation path (`createMovement`) enforce this check. A deactivated goods is correctly blocked from movement requests.
+
+**Stock adjustment (FAIL):** `stockAdjustmentService.requestAdjustment` calls `stockService.findOrCreate(goods_id, location_id)` directly. This queries the `stocks` table without any join to the `goods` table. No goods-status check is performed. An operator can submit a stock adjustment for deactivated goods and the request will be created as `pending`.
+
+Note also that the `Goods` model has `defaultScope: { where: { status: 'ACTIVE' } }` but this scope applies only to direct `Goods` queries, not to `Stock.findOrCreate` which operates on the `stocks` table independently.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Movement service | `backend/services/movementService.js:107–113` | Inactive goods check: **present** |
+| Stock service | `backend/services/stockService.js:36–41` | No goods-status check in `findOrCreate` |
+| Stock adjustment service | `backend/services/stockAdjustmentService.js:40–41` | No goods lookup before `findOrCreate` |
+
+**Suggested improvement:** Add a goods existence and status check in `stockAdjustmentService.requestAdjustment` (same fix as BUG-R7-03 from Scenario 1). This single fix resolves the gap in both Scenario 1 and Scenario 12.
+
+---
+
+### Run 7 Bug Registry
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| BUG-R7-01 | Critical | `POST /api/stock-adjustments/:id/approve` and `POST /api/stock-adjustments/:id/reject` use `authorize('admin', 'manager')` — `warehouse_head` is excluded; blocks Scenarios 2, 3, 6, and 10 | Open |
+| BUG-R7-02 | Critical | No location ownership check in `stockAdjustmentService.requestAdjustment`; `warehouse_operator` can submit adjustments for any `location_id` in the system | Open |
+| BUG-R7-03 | High | `stockAdjustmentService.requestAdjustment` does not validate that `goods_id` refers to an existing, ACTIVE goods record before calling `stockService.findOrCreate`; deactivated goods can be adjusted | Open |
+| BUG-R7-04 | High | `POST /api/goods` and `PUT /api/goods/:id` use `authorize('admin', 'manager')`, excluding `warehouse_head`; contradicts `config/permissions.js` which grants `warehouse_head` full assets CRUD; blocks Scenarios 9 and 11 | Open |
+| BUG-R7-05 | High | `stockAdjustmentService.requestAdjustment` does not check for active movement requests containing the goods at the target location; no warning is returned when such a conflict exists | Open |
+| BUG-R7-06 | High | `StockAdjustmentsPage.jsx:68` calls `getGoods({ isActive: true })` but `getGoods` is the single-item lookup (`GET /goods/:id`); passing an object as ID sends the request `GET /api/goods/[object%20Object]` (404); goods dropdown is always empty | Open |
+| BUG-R7-07 | Medium | No goods impact endpoint (`GET /api/goods/:id/impact`) and no deactivation confirmation modal in `GoodsPage.jsx`; unlike categories/vendors, deactivating goods does not surface a summary of affected stock records | Open |
+| BUG-R7-08 | Medium | `goodsService.updateGoods` uniqueness check uses raw column name `data.product_id` in `Goods.findOne({ where: { product_id: ... } })`; Sequelize silently ignores unknown attribute names, so the check may not fire and duplicate `productId` values can be created via the update path | Open |
+| BUG-R7-09 | Medium | Frontend `StockAdjustmentsPage.jsx:30` sets `canReview = user?.role === 'admin' \|\| user?.role === 'manager'`; even after fixing BUG-R7-01, warehouse heads will not see Approve/Reject buttons | Open |
+| BUG-R7-10 | Low | `stockAdjustmentService.js:10` includes `attributes: ['id', 'name', 'sku', 'unit']` for the `Goods` association, but the active `Goods` model has no `sku` or `unit` columns; these fields return `null` in all responses | Open |
+| BUG-R7-11 | Low | `StockAdjustmentsPage.jsx:240` renders `g.sku` in the goods dropdown option label; `Goods` model has no `sku` field, so all options display `GoodsName (undefined)` | Open |
+
+---
+
+### Suggested Improvements (Priority Order)
+
+1. **Fix approve/reject route authorization (BUG-R7-01, R7-09)** — Highest impact: affects 4 scenarios. Change `authorize('admin', 'manager')` to `authorize('admin', 'manager', 'warehouse_head')` on both approve and reject routes. Update `canReview` in `StockAdjustmentsPage.jsx` to include `'warehouse_head'`. Consider migrating these guards to `checkPermission('movements', 'approve')` to rely on the single-source-of-truth permission matrix.
+
+2. **Add location ownership guard for `warehouse_operator` (BUG-R7-02)** — Critical for data integrity. Add a check in `stockAdjustmentController.requestAdjustment` comparing `req.body.location_id` against `req.user.locationId` when the caller is a `warehouse_operator`. Filter the location dropdown in the frontend to the user's own location.
+
+3. **Add goods status validation in `requestAdjustment` (BUG-R7-03, R7-10)** — Resolves Scenarios 1 and 12 in one fix. Fetch the `Goods` record by `goods_id` at the start of `requestAdjustment`; throw 404 if absent, 422 if `status !== 'ACTIVE'`. Also remove `'sku'` and `'unit'` from the `INCLUDE_FULL` attributes list (BUG-R7-10) or add those fields to the `Goods` model if they are genuinely needed.
+
+4. **Fix frontend goods dropdown (BUG-R7-06, R7-11)** — Single-line fix with high UX impact. Replace `getGoods({ isActive: true })` with `listActiveGoods()` in `StockAdjustmentsPage.jsx:68`. Change the option label from `g.sku` to `g.productId` (or whichever identifier is authoritative).
+
+5. **Add `warehouse_head` to goods routes (BUG-R7-04)** — Unblocks Scenarios 9 and 11. Change `authorize('admin', 'manager')` to `authorize('admin', 'manager', 'warehouse_head')` on goods create and update routes. Delete route can optionally remain admin-only.
+
+6. **Implement active-movement warning for stock adjustments (BUG-R7-05)** — Add a `MovementHeader`/`MovementDetail` check in `requestAdjustment` that throws a 409 with a descriptive message if the goods at the target location are currently in an active movement. Reuse `ACTIVE_MOVEMENT_STATUSES` from `backend/utils/constants.js`.
+
+7. **Add goods deactivation impact endpoint and confirmation modal (BUG-R7-07)** — Add `goodsService.getImpact(id)` returning affected stocks and active movements. Add `GET /api/goods/:id/impact` route. Add a pre-deactivation confirmation modal in `GoodsPage.jsx` that mirrors the pattern used for categories and vendors.
+
+8. **Fix `updateGoods` uniqueness check (BUG-R7-08)** — Change the `findOne` call in `goodsService.updateGoods` to use the Sequelize attribute name `productId` instead of the raw column name `product_id`, consistent with the fix already applied in `createGoods`.
+
