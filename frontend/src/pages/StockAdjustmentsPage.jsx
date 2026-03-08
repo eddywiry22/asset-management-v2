@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import SuccessModal from '@/components/SuccessModal';
 import {
   getAdjustments,
   requestAdjustment,
@@ -49,6 +50,9 @@ export default function StockAdjustmentsPage() {
   const [reviewSaving, setReviewSaving] = useState(false);
   const [reviewError, setReviewError] = useState('');
 
+  // Success modal
+  const [successModal, setSuccessModal] = useState(null); // { title, message }
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -91,6 +95,7 @@ export default function StockAdjustmentsPage() {
       });
       setShowRequest(false);
       load();
+      setSuccessModal({ title: 'Request Submitted', message: 'Your stock adjustment request has been submitted and is awaiting approval.' });
     } catch (e) {
       setReqError(e.response?.data?.message || 'Request failed');
     } finally {
@@ -112,11 +117,15 @@ export default function StockAdjustmentsPage() {
     try {
       if (reviewing.action === 'approve') {
         await approveAdjustment(reviewing.adj.id, { review_note: reviewNote });
+        setReviewing(null);
+        load();
+        setSuccessModal({ title: 'Adjustment Approved', message: 'The stock adjustment has been approved and the stock has been updated.' });
       } else {
         await rejectAdjustment(reviewing.adj.id, { review_note: reviewNote });
+        setReviewing(null);
+        load();
+        setSuccessModal({ title: 'Adjustment Rejected', message: 'The stock adjustment request has been rejected.' });
       }
-      setReviewing(null);
-      load();
     } catch (e) {
       setReviewError(e.response?.data?.message || 'Action failed');
     } finally {
@@ -126,6 +135,13 @@ export default function StockAdjustmentsPage() {
 
   return (
     <div className="space-y-6">
+      <SuccessModal
+        isOpen={!!successModal}
+        onClose={() => setSuccessModal(null)}
+        title={successModal?.title ?? ''}
+        message={successModal?.message}
+      />
+
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Stock Adjustments</h2>

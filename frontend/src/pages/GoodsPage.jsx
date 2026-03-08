@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import Alert from '@/components/Alert';
 import Spinner from '@/components/Spinner';
+import SuccessModal from '@/components/SuccessModal';
 import {
   listGoods,
   createGoods,
@@ -346,13 +347,10 @@ export default function GoodsPage() {
   const [pendingUpdateData, setPendingUpdateData] = useState(null);
   const [isDeactivating, setIsDeactivating] = useState(false);
 
-  // Toast notification
-  const [toast, setToast] = useState(null);
+  // Success modal
+  const [successModal, setSuccessModal] = useState(null); // { title, message }
 
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3500);
-  };
+  const showSuccess = (title, message = '') => setSuccessModal({ title, message });
 
   const fetchGoods = useCallback(async () => {
     setLoading(true);
@@ -381,7 +379,7 @@ export default function GoodsPage() {
     try {
       await createGoods(formData);
       setPanel(null);
-      showToast('Goods created successfully');
+      showSuccess('Goods Created', 'The item has been added to the catalog.');
       fetchGoods();
     } catch (err) {
       const res = err?.response?.data;
@@ -422,7 +420,7 @@ export default function GoodsPage() {
     try {
       await updateGoods(goodsId, formData);
       setPanel(null);
-      showToast('Goods updated successfully');
+      showSuccess('Goods Updated', 'The changes have been saved successfully.');
       fetchGoods();
     } catch (err) {
       const res = err?.response?.data;
@@ -443,10 +441,10 @@ export default function GoodsPage() {
       await updateGoods(pendingUpdateData.id, pendingUpdateData.formData);
       setDeactivateImpact(null);
       setPendingUpdateData(null);
-      showToast('Goods deactivated successfully');
+      showSuccess('Goods Deactivated', 'The item is now inactive and cannot be used in new requests.');
       fetchGoods();
     } catch (err) {
-      showToast(err?.response?.data?.message ?? 'Failed to deactivate goods', 'error');
+      setPageError(err?.response?.data?.message ?? 'Failed to deactivate goods');
       setDeactivateImpact(null);
       setPendingUpdateData(null);
     } finally {
@@ -461,10 +459,10 @@ export default function GoodsPage() {
     try {
       await deleteGoods(deleteTarget.id);
       setDeleteTarget(null);
-      showToast('Goods deleted successfully');
+      showSuccess('Goods Deleted', 'The item has been removed from the catalog.');
       fetchGoods();
     } catch (err) {
-      showToast(err?.response?.data?.message ?? 'Failed to delete goods', 'error');
+      setPageError(err?.response?.data?.message ?? 'Failed to delete goods');
       setDeleteTarget(null);
     } finally {
       setIsDeleting(false);
@@ -491,12 +489,13 @@ export default function GoodsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Toast */}
-      {toast && (
-        <div className="fixed top-4 right-4 z-50 w-80">
-          <Alert type={toast.type} message={toast.message} onClose={() => setToast(null)} />
-        </div>
-      )}
+      {/* Success modal */}
+      <SuccessModal
+        isOpen={!!successModal}
+        onClose={() => setSuccessModal(null)}
+        title={successModal?.title ?? ''}
+        message={successModal?.message}
+      />
 
       {/* Delete modal */}
       {deleteTarget && (
@@ -518,6 +517,11 @@ export default function GoodsPage() {
         />
       )}
 
+      {/* Page-level error (post-confirm failures) */}
+      {pageError && (
+        <Alert type="error" message={pageError} onClose={() => setPageError('')} />
+      )}
+
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
@@ -526,28 +530,46 @@ export default function GoodsPage() {
             Manage product catalog. INACTIVE goods cannot be selected in movement requests.
           </p>
         </div>
-        {!isFormOpen && (
-          <button className="btn btn-primary" onClick={openCreate}>
-            + Add Goods
-          </button>
-        )}
+        <button className="btn btn-primary" onClick={openCreate}>
+          + Add Goods
+        </button>
       </div>
 
-      {/* Create / Edit panel */}
+      {/* Create / Edit modal */}
       {isFormOpen && (
-        <div className="card p-6">
-          <h3 className="mb-5 text-base font-semibold text-gray-900">
-            {isEditMode ? 'Edit Goods' : 'Add New Goods'}
-          </h3>
-          <GoodsForm
-            initial={isEditMode ? panel : undefined}
-            onSave={isEditMode ? handleUpdate : handleCreate}
-            onCancel={closePanel}
-            isSubmitting={isSubmitting}
-            serverError={formError}
-            categories={categories}
-            vendors={vendors}
-          />
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4"
+          onClick={closePanel}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+              <h3 className="text-base font-semibold text-gray-900">
+                {isEditMode ? 'Edit Goods' : 'Add New Goods'}
+              </h3>
+              <button
+                onClick={closePanel}
+                disabled={isSubmitting}
+                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 focus:outline-none"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-6 py-5">
+              <GoodsForm
+                initial={isEditMode ? panel : undefined}
+                onSave={isEditMode ? handleUpdate : handleCreate}
+                onCancel={closePanel}
+                isSubmitting={isSubmitting}
+                serverError={formError}
+                categories={categories}
+                vendors={vendors}
+              />
+            </div>
+          </div>
         </div>
       )}
 

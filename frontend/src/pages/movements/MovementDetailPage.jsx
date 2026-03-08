@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import MovementStatusBadge from '@/components/MovementStatusBadge';
 import Spinner from '@/components/Spinner';
 import Alert from '@/components/Alert';
+import SuccessModal from '@/components/SuccessModal';
 
 const fmt = (val) => {
   if (val === null || val === undefined) return <span className="text-gray-400 italic">—</span>;
@@ -78,7 +79,7 @@ export default function MovementDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState(null);
   const [actionError, setActionError] = useState(null);
-  const [successMsg, setSuccessMsg] = useState(null);
+  const [successModal, setSuccessModal] = useState(null); // { title, message }
   const [showRejectModal, setShowRejectModal] = useState(false);
 
   const canManage = ['admin', 'warehouse_head', 'destination_operator'].includes(user?.role);
@@ -98,14 +99,13 @@ export default function MovementDetailPage() {
 
   useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const performAction = async (actionFn, successMessage) => {
+  const performAction = async (actionFn, successTitle, successMessage) => {
     setActionLoading(true);
     setActionError(null);
-    setSuccessMsg(null);
     try {
       const res = await actionFn();
       setMovement(res.data.data);
-      setSuccessMsg(successMessage);
+      setSuccessModal({ title: successTitle, message: successMessage });
     } catch (err) {
       setActionError(err.response?.data?.message || 'Action failed');
     } finally {
@@ -116,19 +116,22 @@ export default function MovementDetailPage() {
   const handleApproveHead = () =>
     performAction(
       () => movementService.approveByHead(id),
-      'Movement approved by warehouse head.'
+      'Movement Approved',
+      'The movement has been approved by the warehouse head and is pending destination approval.'
     );
 
   const handleApproveDest = () =>
     performAction(
       () => movementService.approveByDestination(id),
-      'Movement approved by destination operator.'
+      'Movement Approved',
+      'The movement has been approved by the destination and is ready for finalization.'
     );
 
   const handleFinalize = () =>
     performAction(
       () => movementService.finalizeMovement(id),
-      'Movement finalized. Stock has been updated.'
+      'Movement Finalized',
+      'The movement has been completed and stock levels have been updated.'
     );
 
   const handleReject = async (reason) => {
@@ -137,8 +140,8 @@ export default function MovementDetailPage() {
     try {
       const res = await movementService.rejectMovement(id, reason);
       setMovement(res.data.data);
-      setSuccessMsg('Movement has been rejected.');
       setShowRejectModal(false);
+      setSuccessModal({ title: 'Movement Rejected', message: 'The movement request has been rejected.' });
     } catch (err) {
       setActionError(err.response?.data?.message || 'Rejection failed');
     } finally {
@@ -177,6 +180,13 @@ export default function MovementDetailPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
+      <SuccessModal
+        isOpen={!!successModal}
+        onClose={() => setSuccessModal(null)}
+        title={successModal?.title ?? ''}
+        message={successModal?.message}
+      />
+
       {showRejectModal && (
         <RejectModal
           onConfirm={handleReject}
@@ -202,9 +212,6 @@ export default function MovementDetailPage() {
         </div>
       </div>
 
-      {successMsg && (
-        <Alert type="success" message={successMsg} onClose={() => setSuccessMsg(null)} />
-      )}
       {actionError && (
         <Alert type="error" message={actionError} onClose={() => setActionError(null)} />
       )}

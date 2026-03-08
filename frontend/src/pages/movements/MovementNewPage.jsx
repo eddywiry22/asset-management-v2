@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import * as movementService from '@/services/movementService';
 import Alert from '@/components/Alert';
 import Spinner from '@/components/Spinner';
+import SuccessModal from '@/components/SuccessModal';
 
 const emptyRow = () => ({ _key: Math.random(), itemId: '', quantity: '' });
 
@@ -33,6 +34,7 @@ export default function MovementNewPage() {
   const [submitError, setSubmitError] = useState(null);
   const [warnings, setWarnings] = useState([]);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [createdMovement, setCreatedMovement] = useState(null); // movement on success
 
   // Load reference data on mount
   useEffect(() => {
@@ -167,12 +169,8 @@ export default function MovementNewPage() {
       const res = await movementService.createMovement(payload);
       const { movement, warnings: w } = res.data.data;
 
-      if (w && w.length > 0) {
-        setWarnings(w);
-        setTimeout(() => navigate(`/movements/${movement.id}`), 2500);
-      } else {
-        navigate(`/movements/${movement.id}`);
-      }
+      if (w && w.length > 0) setWarnings(w);
+      setCreatedMovement(movement);
     } catch (err) {
       setSubmitError(err.response?.data?.message || 'Failed to create movement request');
     } finally {
@@ -188,6 +186,13 @@ export default function MovementNewPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      <SuccessModal
+        isOpen={!!createdMovement}
+        onClose={() => navigate(`/movements/${createdMovement?.id}`)}
+        title="Movement Request Created"
+        message={`Movement request${createdMovement?.movementNumber ? ` ${createdMovement.movementNumber}` : ''} has been submitted and is pending warehouse head approval.`}
+      />
+
       {/* Page header */}
       <div>
         <h2 className="text-2xl font-bold text-gray-900">New Movement Request</h2>
