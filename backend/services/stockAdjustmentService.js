@@ -1,14 +1,16 @@
-const { StockAdjustment, Stock, Goods, Location, User, sequelize } = require('../models');
+const { Op } = require('sequelize');
+const { StockAdjustment, Stock, Goods, Location, User, MovementHeader, MovementDetail, sequelize } = require('../models');
 const AppError = require('../utils/AppError');
 const stockService = require('./stockService');
+const { ACTIVE_MOVEMENT_STATUSES } = require('../utils/constants');
 
 const INCLUDE_FULL = [
   {
     model: Stock,
     as: 'stock',
     include: [
-      { model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit'] },
-      { model: Location, as: 'location', attributes: ['id', 'name', 'code'] },
+      { model: Goods, as: 'goods', attributes: ['id', 'name', 'productId'] },
+      { model: Location, as: 'location', attributes: ['id', 'name'] },
     ],
   },
   { model: User, as: 'requester', attributes: ['id', 'name', 'email'] },
@@ -38,7 +40,31 @@ const findById = async (id) => {
  * goods_id + location_id are resolved to a stock record (created if absent).
  */
 const requestAdjustment = async ({ goods_id, location_id, adjustment_type, quantity, reason }, requestedByUserId) => {
+  // Validate goods exists and is ACTIVE before proceeding (BUG-R7-03)
+  const goods = await Goods.unscoped().findByPk(goods_id);
+  if (!goods) throw new AppError('Goods not found', 404);
+  if (goods.status !== 'ACTIVE') {
+    throw new AppError(`Goods "${goods.name}" is inactive and cannot be adjusted`, 422);
+  }
+
   const stock = await stockService.findOrCreate(goods_id, location_id);
+
+  // Warn if goods at this location are part of an active movement (BUG-R7-05)
+  const activeMovement = await MovementHeader.findOne({
+    where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+    include: [{
+      model: MovementDetail,
+      as: 'details',
+      where: { goodsId: goods_id },
+      required: true,
+    }],
+  });
+  if (activeMovement) {
+    throw new AppError(
+      `Goods are currently part of active movement ${activeMovement.movementNumber}. Finalize or reject that movement before creating a stock adjustment.`,
+      409
+    );
+  }
 
   // Pre-validate: ensure the proposed adjustment won't send quantity below zero
   // (full enforcement happens on approval, but give early feedback)

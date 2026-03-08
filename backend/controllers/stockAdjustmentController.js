@@ -1,5 +1,5 @@
 const stockAdjustmentService = require('../services/stockAdjustmentService');
-const { success, created } = require('../utils/response');
+const { success, created, forbidden } = require('../utils/response');
 
 const getAll = async (req, res, next) => {
   try {
@@ -22,6 +22,12 @@ const getById = async (req, res, next) => {
 
 const requestAdjustment = async (req, res, next) => {
   try {
+    // Warehouse operators may only create adjustments for their own assigned location
+    if (req.user.role === 'warehouse_operator') {
+      if (Number(req.body.location_id) !== req.user.locationId) {
+        return forbidden(res, 'You may only create adjustments for your assigned location');
+      }
+    }
     const data = await stockAdjustmentService.requestAdjustment(req.body, req.user.id);
     return created(res, data, 'Stock adjustment request submitted and awaiting approval');
   } catch (err) {

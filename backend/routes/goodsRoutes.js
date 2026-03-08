@@ -14,8 +14,8 @@ router.use(authenticate);
 const createSchema = Joi.object({
   product_id: Joi.string().trim().max(100).required(),
   name: Joi.string().trim().min(1).max(200).required(),
-  category: Joi.string().trim().max(100).required(),
-  vendor: Joi.string().trim().max(150).required(),
+  category: Joi.number().integer().positive().required(),
+  vendor: Joi.number().integer().positive().required(),
   description: Joi.string().trim().max(2000).allow('', null).optional(),
   status: Joi.string().valid('ACTIVE', 'INACTIVE').default('ACTIVE'),
 });
@@ -23,8 +23,8 @@ const createSchema = Joi.object({
 const updateSchema = Joi.object({
   product_id: Joi.string().trim().max(100).optional(),
   name: Joi.string().trim().min(1).max(200).optional(),
-  category: Joi.string().trim().max(100).optional(),
-  vendor: Joi.string().trim().max(150).optional(),
+  category: Joi.number().integer().positive().optional(),
+  vendor: Joi.number().integer().positive().optional(),
   description: Joi.string().trim().max(2000).allow('', null).optional(),
   status: Joi.string().valid('ACTIVE', 'INACTIVE').optional(),
 }).min(1); // at least one field must be provided
@@ -40,20 +40,23 @@ const idParamSchema = Joi.object({
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
-// GET /api/goods           – list all (admin + manager)
-router.get('/', authorize('admin', 'manager'), validate(listQuerySchema, 'query'), goodsController.list);
+// GET /api/goods           – list all (admin + warehouse_head)
+router.get('/', authorize('admin', 'warehouse_head'), validate(listQuerySchema, 'query'), goodsController.list);
 
-// GET /api/goods/active    – list ACTIVE only (all roles, used by movement requests)
+// GET /api/goods/active    – list ACTIVE only (all roles, used by movement requests and stock adjustments)
 router.get('/active', goodsController.listActive);
 
-// GET /api/goods/:id       – get one (admin + manager)
-router.get('/:id', authorize('admin', 'manager'), validate(idParamSchema, 'params'), goodsController.getById);
+// GET /api/goods/:id       – get one (admin + warehouse_head)
+router.get('/:id', authorize('admin', 'warehouse_head'), validate(idParamSchema, 'params'), goodsController.getById);
 
-// POST /api/goods          – create (admin + manager)
-router.post('/', authorize('admin', 'manager'), validate(createSchema), goodsController.create);
+// GET /api/goods/:id/impact – impact summary for deactivation confirmation (admin + warehouse_head)
+router.get('/:id/impact', authorize('admin', 'warehouse_head'), validate(idParamSchema, 'params'), goodsController.getImpact);
 
-// PUT /api/goods/:id       – full / partial update (admin + manager)
-router.put('/:id', authorize('admin', 'manager'), validate(idParamSchema, 'params'), validate(updateSchema), goodsController.update);
+// POST /api/goods          – create (admin + warehouse_head)
+router.post('/', authorize('admin', 'warehouse_head'), validate(createSchema), goodsController.create);
+
+// PUT /api/goods/:id       – full / partial update (admin + warehouse_head)
+router.put('/:id', authorize('admin', 'warehouse_head'), validate(idParamSchema, 'params'), validate(updateSchema), goodsController.update);
 
 // DELETE /api/goods/:id    – delete (admin only)
 router.delete('/:id', authorize('admin'), validate(idParamSchema, 'params'), goodsController.remove);

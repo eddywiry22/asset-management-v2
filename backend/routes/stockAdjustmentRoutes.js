@@ -34,18 +34,18 @@ router.get('/:id', stockAdjustmentController.getById);
 // POST /api/stock-adjustments  – any authenticated user can request an adjustment
 router.post('/', validate(requestSchema), stockAdjustmentController.requestAdjustment);
 
-// POST /api/stock-adjustments/:id/approve  (admin, manager only)
+// POST /api/stock-adjustments/:id/approve  (admin, warehouse_head only)
 router.post(
   '/:id/approve',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(reviewSchema),
   stockAdjustmentController.approveAdjustment
 );
 
-// POST /api/stock-adjustments/:id/reject  (admin, manager only)
+// POST /api/stock-adjustments/:id/reject  (admin, warehouse_head only)
 router.post(
   '/:id/reject',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(reviewSchema),
   stockAdjustmentController.rejectAdjustment
 );
