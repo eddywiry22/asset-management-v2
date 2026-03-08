@@ -39,23 +39,23 @@ router.get('/', validate(querySchema, 'query'), vendorController.list);
 // GET /api/vendors/:id
 router.get('/:id', vendorController.getOne);
 
-// POST /api/vendors  (admin & manager only)
+// POST /api/vendors  (admin & warehouse_head only)
 router.post(
   '/',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(createSchema),
   vendorController.create
 );
 
-// PUT /api/vendors/:id  (admin & manager only)
+// PUT /api/vendors/:id  (admin & warehouse_head only)
 router.put(
   '/:id',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(updateSchema),
   vendorController.update
 );
 
-// DELETE /api/vendors/:id  (admin only)
-router.delete('/:id', authorize('admin'), vendorController.remove);
+// DELETE /api/vendors/:id  (admin & warehouse_head only)
+router.delete('/:id', authorize('admin', 'warehouse_head'), vendorController.remove);
 
 module.exports = router;

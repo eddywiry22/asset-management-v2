@@ -6,8 +6,8 @@ const EMPTY_FORM = { name: '', description: '' };
 
 export default function CategoriesPage() {
   const { user } = useAuth();
-  const canWrite = user?.role === 'admin' || user?.role === 'manager';
-  const canDelete = user?.role === 'admin';
+  const canWrite = user?.role === 'admin' || user?.role === 'warehouse_head';
+  const canDelete = user?.role === 'admin' || user?.role === 'warehouse_head';
 
   const [categories, setCategories] = useState([]);
   const [meta, setMeta] = useState(null);

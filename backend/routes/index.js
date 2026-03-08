@@ -11,6 +11,7 @@ const referenceDataRoutes = require('./referenceDataRoutes');
 const auditLogRoutes = require('./auditLogRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
 const movementRequestRoutes = require('./movementRequestRoutes');
+const userRoutes = require('./userRoutes');
 
 const router = Router();
 
@@ -26,5 +27,6 @@ router.use('/reference-data', referenceDataRoutes);
 router.use('/audit-logs', auditLogRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/movement-requests', movementRequestRoutes);
+router.use('/users', userRoutes);
 
 module.exports = router;

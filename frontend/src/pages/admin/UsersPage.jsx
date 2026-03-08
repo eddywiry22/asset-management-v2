@@ -1,17 +1,35 @@
 import { useState, useEffect, useCallback } from 'react';
-import vendorService from '@/services/vendorService';
+import userService from '@/services/userService';
+import locationService from '@/services/locationService';
 import { useAuth } from '@/contexts/AuthContext';
 
-const EMPTY_FORM = { name: '', contactPerson: '', email: '', phone: '', address: '' };
+const ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
 
-export default function VendorsPage() {
-  const { user } = useAuth();
-  const canWrite = user?.role === 'admin' || user?.role === 'warehouse_head';
-  const canDelete = user?.role === 'admin' || user?.role === 'warehouse_head';
+const EMPTY_FORM = {
+  name: '',
+  email: '',
+  password: '',
+  role: 'viewer',
+  phoneNumber: '',
+  locationId: '',
+  status: 'ACTIVE',
+};
 
-  const [vendors, setVendors] = useState([]);
+function roleLabel(role) {
+  return role.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export default function UsersPage() {
+  const { user: currentUser } = useAuth();
+  const canWrite = currentUser?.role === 'admin' || currentUser?.role === 'warehouse_head';
+  const canDelete = currentUser?.role === 'admin';
+  const canCreate = currentUser?.role === 'admin';
+
+  const [users, setUsers] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [meta, setMeta] = useState(null);
   const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [alert, setAlert] = useState(null);
@@ -24,23 +42,31 @@ export default function VendorsPage() {
 
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  const fetchVendors = useCallback(async () => {
+  const fetchUsers = useCallback(async () => {
     setLoading(true);
     setAlert(null);
     try {
-      const res = await vendorService.list({ search, page, limit: 15 });
-      setVendors(res.data.data ?? []);
+      const params = { search, page, limit: 15 };
+      if (roleFilter) params.role = roleFilter;
+      const res = await userService.list(params);
+      setUsers(res.data.data ?? []);
       setMeta(res.data.meta ?? null);
     } catch (err) {
-      setAlert({ type: 'error', message: err.response?.data?.message ?? 'Failed to load vendors' });
+      setAlert({ type: 'error', message: err.response?.data?.message ?? 'Failed to load users' });
     } finally {
       setLoading(false);
     }
-  }, [search, page]);
+  }, [search, page, roleFilter]);
 
   useEffect(() => {
-    fetchVendors();
-  }, [fetchVendors]);
+    fetchUsers();
+  }, [fetchUsers]);
+
+  useEffect(() => {
+    locationService.getAll({ status: 'ACTIVE' }).then((res) => {
+      setLocations(res.data.data ?? []);
+    }).catch(() => {});
+  }, []);
 
   const openCreate = () => {
     setEditing(null);
@@ -49,14 +75,16 @@ export default function VendorsPage() {
     setModalOpen(true);
   };
 
-  const openEdit = (vendor) => {
-    setEditing(vendor);
+  const openEdit = (u) => {
+    setEditing(u);
     setForm({
-      name: vendor.name,
-      contactPerson: vendor.contactPerson ?? '',
-      email: vendor.email ?? '',
-      phone: vendor.phone ?? '',
-      address: vendor.address ?? '',
+      name: u.name,
+      email: u.email,
+      password: '',
+      role: u.role,
+      phoneNumber: u.phoneNumber ?? '',
+      locationId: u.locationId ?? '',
+      status: u.status,
     });
     setFormError('');
     setModalOpen(true);
@@ -69,30 +97,34 @@ export default function VendorsPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.name.trim()) {
-      setFormError('Name is required');
-      return;
-    }
+    if (!form.name.trim()) { setFormError('Name is required'); return; }
+    if (!form.email.trim()) { setFormError('Email is required'); return; }
+    if (!editing && !form.password) { setFormError('Password is required'); return; }
+
     setFormError('');
     setSubmitting(true);
     try {
       const payload = {
         name: form.name,
-        contactPerson: form.contactPerson || null,
-        email: form.email || null,
-        phone: form.phone || null,
-        address: form.address || null,
+        email: form.email,
+        role: form.role,
+        phoneNumber: form.phoneNumber || null,
+        locationId: form.locationId ? Number(form.locationId) : null,
+        status: form.status,
       };
+      if (form.password) payload.password = form.password;
+      if (!editing) payload.password = form.password;
+
       if (editing) {
-        await vendorService.update(editing.id, payload);
-        setAlert({ type: 'success', message: 'Vendor updated successfully' });
+        await userService.update(editing.id, payload);
+        setAlert({ type: 'success', message: 'User updated successfully' });
       } else {
-        await vendorService.create(payload);
-        setAlert({ type: 'success', message: 'Vendor created successfully' });
+        await userService.create(payload);
+        setAlert({ type: 'success', message: 'User created successfully' });
       }
       setModalOpen(false);
       setPage(1);
-      fetchVendors();
+      fetchUsers();
     } catch (err) {
       setFormError(err.response?.data?.message ?? 'An error occurred');
     } finally {
@@ -103,12 +135,12 @@ export default function VendorsPage() {
   const handleDelete = async () => {
     if (!confirmDelete) return;
     try {
-      await vendorService.remove(confirmDelete.id);
+      await userService.remove(confirmDelete.id);
       setAlert({ type: 'success', message: `"${confirmDelete.name}" deleted` });
       setConfirmDelete(null);
-      fetchVendors();
+      fetchUsers();
     } catch (err) {
-      setAlert({ type: 'error', message: err.response?.data?.message ?? 'Failed to delete vendor' });
+      setAlert({ type: 'error', message: err.response?.data?.message ?? 'Failed to delete user' });
       setConfirmDelete(null);
     }
   };
@@ -118,12 +150,12 @@ export default function VendorsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Vendors</h1>
-          <p className="mt-1 text-sm text-gray-500">Manage asset vendors and suppliers</p>
+          <h1 className="text-2xl font-bold text-gray-900">Users</h1>
+          <p className="mt-1 text-sm text-gray-500">Manage system users and their roles</p>
         </div>
-        {canWrite && (
+        {canCreate && (
           <button className="btn btn-primary" onClick={openCreate}>
-            + New Vendor
+            + New User
           </button>
         )}
       </div>
@@ -141,66 +173,80 @@ export default function VendorsPage() {
         </div>
       )}
 
-      {/* Search */}
-      <div className="flex gap-3">
+      {/* Filters */}
+      <div className="flex gap-3 flex-wrap">
         <input
           type="text"
           className="input max-w-xs"
-          placeholder="Search vendors…"
+          placeholder="Search users…"
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
         />
+        <select
+          className="input max-w-[180px]"
+          value={roleFilter}
+          onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
+        >
+          <option value="">All roles</option>
+          {ROLES.map((r) => (
+            <option key={r} value={r}>{roleLabel(r)}</option>
+          ))}
+        </select>
       </div>
 
       {/* Table */}
       <div className="card overflow-hidden p-0">
         {loading ? (
           <p className="p-6 text-center text-sm text-gray-500">Loading…</p>
-        ) : vendors.length === 0 ? (
-          <p className="p-6 text-center text-sm text-gray-500">No vendors found.</p>
+        ) : users.length === 0 ? (
+          <p className="p-6 text-center text-sm text-gray-500">No users found.</p>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
               <tr>
                 <th className="px-6 py-3">Name</th>
-                <th className="px-6 py-3">Contact Person</th>
                 <th className="px-6 py-3">Email</th>
-                <th className="px-6 py-3">Phone</th>
+                <th className="px-6 py-3">Role</th>
+                <th className="px-6 py-3">Location</th>
                 <th className="px-6 py-3">Status</th>
                 <th className="px-6 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {vendors.map((v) => (
-                <tr key={v.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 font-medium text-gray-900">{v.name}</td>
-                  <td className="px-6 py-3 text-gray-600">{v.contactPerson || '—'}</td>
-                  <td className="px-6 py-3 text-gray-600">{v.email || '—'}</td>
-                  <td className="px-6 py-3 text-gray-600">{v.phone || '—'}</td>
+              {users.map((u) => (
+                <tr key={u.id} className="hover:bg-gray-50">
+                  <td className="px-6 py-3 font-medium text-gray-900">{u.name}</td>
+                  <td className="px-6 py-3 text-gray-600">{u.email}</td>
+                  <td className="px-6 py-3">
+                    <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+                      {roleLabel(u.role)}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3 text-gray-600">{u.location?.name ?? '—'}</td>
                   <td className="px-6 py-3">
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                        v.isActive
+                        u.status === 'ACTIVE'
                           ? 'bg-green-100 text-green-700'
                           : 'bg-gray-100 text-gray-600'
                       }`}
                     >
-                      {v.isActive ? 'Active' : 'Inactive'}
+                      {u.status === 'ACTIVE' ? 'Active' : 'Inactive'}
                     </span>
                   </td>
                   <td className="px-6 py-3 text-right space-x-3">
                     {canWrite && (
                       <button
                         className="text-primary-600 hover:underline text-sm"
-                        onClick={() => openEdit(v)}
+                        onClick={() => openEdit(u)}
                       >
                         Edit
                       </button>
                     )}
-                    {canDelete && (
+                    {canDelete && u.id !== currentUser?.id && (
                       <button
                         className="text-red-600 hover:underline text-sm"
-                        onClick={() => setConfirmDelete(v)}
+                        onClick={() => setConfirmDelete(u)}
                       >
                         Delete
                       </button>
@@ -220,18 +266,10 @@ export default function VendorsPage() {
             Page {meta.page} of {meta.totalPages} ({meta.total} total)
           </span>
           <div className="space-x-2">
-            <button
-              className="btn"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-            >
+            <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
               Previous
             </button>
-            <button
-              className="btn"
-              disabled={page >= meta.totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
+            <button className="btn" disabled={page >= meta.totalPages} onClick={() => setPage((p) => p + 1)}>
               Next
             </button>
           </div>
@@ -243,26 +281,16 @@ export default function VendorsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
             <h2 className="mb-4 text-lg font-semibold text-gray-900">
-              {editing ? 'Edit Vendor' : 'New Vendor'}
+              {editing ? 'Edit User' : 'New User'}
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="label">Name *</label>
-                <input
-                  className="input"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Vendor name"
-                  maxLength={150}
-                />
-              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="label">Contact Person</label>
+                  <label className="label">Name *</label>
                   <input
                     className="input"
-                    value={form.contactPerson}
-                    onChange={(e) => setForm({ ...form, contactPerson: e.target.value })}
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
                     placeholder="Full name"
                     maxLength={100}
                   />
@@ -271,33 +299,72 @@ export default function VendorsPage() {
                   <label className="label">Phone</label>
                   <input
                     className="input"
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    value={form.phoneNumber}
+                    onChange={(e) => setForm({ ...form, phoneNumber: e.target.value })}
                     placeholder="+1 555 000 0000"
                     maxLength={20}
                   />
                 </div>
               </div>
               <div>
-                <label className="label">Email</label>
+                <label className="label">Email *</label>
                 <input
                   type="email"
                   className="input"
                   value={form.email}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="contact@vendor.com"
+                  placeholder="user@example.com"
                   maxLength={150}
                 />
               </div>
               <div>
-                <label className="label">Address</label>
-                <textarea
-                  className="input min-h-[72px] resize-y"
-                  value={form.address}
-                  onChange={(e) => setForm({ ...form, address: e.target.value })}
-                  placeholder="Street, City, Country"
-                  maxLength={2000}
+                <label className="label">{editing ? 'New Password (leave blank to keep current)' : 'Password *'}</label>
+                <input
+                  type="password"
+                  className="input"
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  placeholder={editing ? 'Enter new password to change' : 'Min. 8 characters'}
+                  minLength={form.password ? 8 : undefined}
                 />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="label">Role *</label>
+                  <select
+                    className="input"
+                    value={form.role}
+                    onChange={(e) => setForm({ ...form, role: e.target.value })}
+                  >
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>{roleLabel(r)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Status</label>
+                  <select
+                    className="input"
+                    value={form.status}
+                    onChange={(e) => setForm({ ...form, status: e.target.value })}
+                  >
+                    <option value="ACTIVE">Active</option>
+                    <option value="INACTIVE">Inactive</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="label">Location</label>
+                <select
+                  className="input"
+                  value={form.locationId}
+                  onChange={(e) => setForm({ ...form, locationId: e.target.value })}
+                >
+                  <option value="">No location assigned</option>
+                  {locations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  ))}
+                </select>
               </div>
               {formError && <p className="text-sm text-red-600">{formError}</p>}
               <div className="flex justify-end gap-3">
@@ -317,7 +384,7 @@ export default function VendorsPage() {
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
-            <h2 className="mb-2 text-lg font-semibold text-gray-900">Delete Vendor</h2>
+            <h2 className="mb-2 text-lg font-semibold text-gray-900">Delete User</h2>
             <p className="mb-4 text-sm text-gray-600">
               Are you sure you want to delete <strong>{confirmDelete.name}</strong>? This action cannot be
               undone.

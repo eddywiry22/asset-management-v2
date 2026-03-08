@@ -33,23 +33,23 @@ router.get('/', validate(querySchema, 'query'), categoryController.list);
 // GET /api/categories/:id
 router.get('/:id', categoryController.getOne);
 
-// POST /api/categories  (admin & manager only)
+// POST /api/categories  (admin & warehouse_head only)
 router.post(
   '/',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(createSchema),
   categoryController.create
 );
 
-// PUT /api/categories/:id  (admin & manager only)
+// PUT /api/categories/:id  (admin & warehouse_head only)
 router.put(
   '/:id',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(updateSchema),
   categoryController.update
 );
 
-// DELETE /api/categories/:id  (admin only)
-router.delete('/:id', authorize('admin'), categoryController.remove);
+// DELETE /api/categories/:id  (admin & warehouse_head only)
+router.delete('/:id', authorize('admin', 'warehouse_head'), categoryController.remove);
 
 module.exports = router;

@@ -39,7 +39,7 @@ const update = async (req, res, next) => {
 
 const remove = async (req, res, next) => {
   try {
-    await locationService.remove(Number(req.params.id));
+    await locationService.remove(Number(req.params.id), req.user.id);
     return success(res, null, 'Location deleted');
   } catch (err) {
     return next(err);

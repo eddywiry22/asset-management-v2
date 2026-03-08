@@ -38,19 +38,19 @@ router.get('/:id', validate(idSchema, 'params'), locationController.getById);
 // GET /api/locations/:id/logs
 router.get('/:id/logs', validate(idSchema, 'params'), locationController.getLogs);
 
-// POST /api/locations  (admin & manager only)
-router.post('/', authorize('admin', 'manager'), validate(createSchema), locationController.create);
+// POST /api/locations  (admin & warehouse_head only)
+router.post('/', authorize('admin', 'warehouse_head'), validate(createSchema), locationController.create);
 
-// PATCH /api/locations/:id  (admin & manager only)
+// PATCH /api/locations/:id  (admin & warehouse_head only)
 router.patch(
   '/:id',
-  authorize('admin', 'manager'),
+  authorize('admin', 'warehouse_head'),
   validate(idSchema, 'params'),
   validate(updateSchema),
   locationController.update
 );
 
-// DELETE /api/locations/:id  (admin only)
-router.delete('/:id', authorize('admin'), validate(idSchema, 'params'), locationController.remove);
+// DELETE /api/locations/:id  (admin & warehouse_head only)
+router.delete('/:id', authorize('admin', 'warehouse_head'), validate(idSchema, 'params'), locationController.remove);
 
 module.exports = router;

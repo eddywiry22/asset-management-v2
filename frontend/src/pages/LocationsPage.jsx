@@ -231,8 +231,8 @@ function LogsPanel({ logsState, onClose }) {
 export default function LocationsPage() {
   const { user } = useAuth();
   const [state, dispatch] = useReducer(reducer, initialState);
-  const canWrite = user?.role === 'admin' || user?.role === 'manager';
-  const canDelete = user?.role === 'admin';
+  const canWrite = user?.role === 'admin' || user?.role === 'warehouse_head';
+  const canDelete = user?.role === 'admin' || user?.role === 'warehouse_head';
 
   const fetchLocations = useCallback(async () => {
     try {

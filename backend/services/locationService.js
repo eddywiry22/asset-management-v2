@@ -1,6 +1,8 @@
 const { Op } = require('sequelize');
 const { Location, LocationLog, MovementRequest } = require('../models');
 const AppError = require('../utils/AppError');
+const logger = require('../utils/logger');
+const auditLogService = require('./auditLogService');
 
 /** Statuses that indicate a movement request is not yet finalized */
 const NON_FINALIZED_STATUSES = ['PENDING', 'APPROVED', 'IN_TRANSIT'];
@@ -44,6 +46,17 @@ const create = async (data, performedBy) => {
     action: 'CREATED',
     changes: { name: location.name, address: location.address, status: location.status },
     performedBy,
+  });
+
+  logger.audit('CREATE', 'Location', { id: location.id, by: performedBy, data: { name: location.name } });
+
+  await auditLogService.createAuditLog({
+    userId: performedBy,
+    action: 'CREATE',
+    entity: 'Location',
+    entityId: location.id,
+    before: null,
+    after: { name: location.name, address: location.address, status: location.status },
   });
 
   return location;
@@ -93,6 +106,8 @@ const update = async (id, data, performedBy) => {
     return location; // Nothing changed
   }
 
+  const before = { name: location.name, address: location.address, status: location.status };
+
   await location.update(Object.fromEntries(
     Object.entries(changes).map(([field, { to }]) => [field, to])
   ));
@@ -104,14 +119,26 @@ const update = async (id, data, performedBy) => {
     performedBy,
   });
 
+  logger.audit('UPDATE', 'Location', { id: location.id, by: performedBy, before, after: changes });
+
+  await auditLogService.createAuditLog({
+    userId: performedBy,
+    action: 'UPDATE',
+    entity: 'Location',
+    entityId: id,
+    before,
+    after: changes,
+  });
+
   return location.reload();
 };
 
 /**
  * Delete a location by ID.
  * @param {number} id
+ * @param {number} performedBy - User ID of the actor
  */
-const remove = async (id) => {
+const remove = async (id, performedBy) => {
   const location = await Location.findByPk(id);
   if (!location) throw new AppError('Location not found', 404);
 
@@ -130,7 +157,19 @@ const remove = async (id) => {
     );
   }
 
+  const snapshot = { name: location.name, address: location.address, status: location.status };
   await location.destroy();
+
+  logger.audit('DELETE', 'Location', { id, by: performedBy, data: snapshot });
+
+  await auditLogService.createAuditLog({
+    userId: performedBy,
+    action: 'DELETE',
+    entity: 'Location',
+    entityId: id,
+    before: snapshot,
+    after: null,
+  });
 };
 
 /**
