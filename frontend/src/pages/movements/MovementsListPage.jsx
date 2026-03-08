@@ -4,6 +4,7 @@ import * as movementService from '@/services/movementService';
 import MovementStatusBadge from '@/components/MovementStatusBadge';
 import Spinner from '@/components/Spinner';
 import Alert from '@/components/Alert';
+// BUG-R8-06: listLocations is already exported from movementService
 
 const STATUS_FILTERS = [
   { label: 'All', value: '' },
@@ -22,9 +23,18 @@ export default function MovementsListPage() {
   const [movements, setMovements] = useState([]);
   const [meta, setMeta] = useState({ total: 0, page: 1, pages: 1 });
   const [statusFilter, setStatusFilter] = useState('');
+  const [originFilter, setOriginFilter] = useState('');
+  const [destFilter, setDestFilter] = useState('');
+  const [locationsList, setLocationsList] = useState([]);
   const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    movementService.listLocations()
+      .then((r) => setLocationsList(r.data?.data || []))
+      .catch(() => {});
+  }, []);
 
   const fetchMovements = useCallback(async () => {
     setIsLoading(true);
@@ -32,6 +42,8 @@ export default function MovementsListPage() {
     try {
       const params = { page, limit: 20 };
       if (statusFilter) params.status = statusFilter;
+      if (originFilter) params.originLocationId = originFilter;
+      if (destFilter) params.destinationLocationId = destFilter;
       const res = await movementService.listMovements(params);
       setMovements(res.data.data);
       setMeta(res.data.meta);
@@ -40,7 +52,7 @@ export default function MovementsListPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [statusFilter, page]);
+  }, [statusFilter, originFilter, destFilter, page]);
 
   useEffect(() => {
     fetchMovements();
@@ -48,6 +60,16 @@ export default function MovementsListPage() {
 
   const handleStatusFilter = (value) => {
     setStatusFilter(value);
+    setPage(1);
+  };
+
+  const handleOriginFilter = (value) => {
+    setOriginFilter(value);
+    setPage(1);
+  };
+
+  const handleDestFilter = (value) => {
+    setDestFilter(value);
     setPage(1);
   };
 
@@ -85,6 +107,30 @@ export default function MovementsListPage() {
             {label}
           </button>
         ))}
+      </div>
+
+      {/* Location filters — BUG-R8-06 */}
+      <div className="flex flex-wrap gap-3">
+        <select
+          className="input w-auto min-w-[180px]"
+          value={originFilter}
+          onChange={(e) => handleOriginFilter(e.target.value)}
+        >
+          <option value="">All Origin Locations</option>
+          {locationsList.map((l) => (
+            <option key={l.id} value={l.id}>{l.name}</option>
+          ))}
+        </select>
+        <select
+          className="input w-auto min-w-[180px]"
+          value={destFilter}
+          onChange={(e) => handleDestFilter(e.target.value)}
+        >
+          <option value="">All Destination Locations</option>
+          {locationsList.map((l) => (
+            <option key={l.id} value={l.id}>{l.name}</option>
+          ))}
+        </select>
       </div>
 
       {/* Table */}

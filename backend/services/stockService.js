@@ -6,11 +6,13 @@ const findAll = async ({ goods_id, location_id } = {}) => {
   if (goods_id) where.goods_id = goods_id;
   if (location_id) where.location_id = location_id;
 
+  // BUG-R8-10: `sku` and `unit` do not exist on the Goods model; replaced with
+  // `productId` which is the actual unique product identifier field.
   return Stock.findAll({
     where,
     include: [
-      { model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit'] },
-      { model: Location, as: 'location', attributes: ['id', 'name', 'code'] },
+      { model: Goods, as: 'goods', attributes: ['id', 'name', 'productId'] },
+      { model: Location, as: 'location', attributes: ['id', 'name'] },
     ],
     order: [
       [{ model: Goods, as: 'goods' }, 'name', 'ASC'],
@@ -22,8 +24,8 @@ const findAll = async ({ goods_id, location_id } = {}) => {
 const findById = async (id) => {
   const stock = await Stock.findByPk(id, {
     include: [
-      { model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit'] },
-      { model: Location, as: 'location', attributes: ['id', 'name', 'code'] },
+      { model: Goods, as: 'goods', attributes: ['id', 'name', 'productId'] },
+      { model: Location, as: 'location', attributes: ['id', 'name'] },
     ],
   });
   if (!stock) throw new AppError('Stock record not found', 404);

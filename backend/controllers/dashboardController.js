@@ -118,6 +118,17 @@ const exportMovements = async (req, res, next) => {
   }
 };
 
+// BUG-R8-07: new stock period summary handler
+const getStockPeriodSummary = async (req, res, next) => {
+  try {
+    const filters = extractFilters(req.query);
+    const data = await dashboardService.getStockPeriodSummary(filters);
+    return success(res, data, 'Stock period summary retrieved');
+  } catch (err) {
+    return next(err);
+  }
+};
+
 const getLocations = async (req, res, next) => {
   try {
     const data = await dashboardService.getLocations();
@@ -146,4 +157,5 @@ module.exports = {
   exportMovements,
   getLocations,
   getGoods,
+  getStockPeriodSummary,
 };

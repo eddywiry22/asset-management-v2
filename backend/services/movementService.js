@@ -294,9 +294,12 @@ const getMovement = async (id) => {
 // List movements with optional filters
 // ---------------------------------------------------------------------------
 
-const listMovements = async ({ status, page = 1, limit = 20 } = {}) => {
+const listMovements = async ({ status, originLocationId, destinationLocationId, page = 1, limit = 20 } = {}) => {
   const where = {};
   if (status) where.status = status;
+  // BUG-R8-06: support optional location filters on both origin and destination
+  if (originLocationId) where.originLocationId = originLocationId;
+  if (destinationLocationId) where.destinationLocationId = destinationLocationId;
 
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
@@ -329,7 +332,7 @@ const listMovements = async ({ status, page = 1, limit = 20 } = {}) => {
 // Workflow transitions
 // ---------------------------------------------------------------------------
 
-const approveByHead = async (userId, movementId) => {
+const approveByHead = async (userId, movementId, userLocationId, userRole) => {
   const movement = await MovementHeader.findByPk(movementId);
   if (!movement) throw new AppError('Movement not found', 404);
   if (movement.status !== 'PENDING_HEAD_APPROVAL') {
@@ -340,6 +343,17 @@ const approveByHead = async (userId, movementId) => {
   // movement they themselves created.
   if (movement.requestedById === userId) {
     throw new AppError('You cannot approve a movement request that you created', 403);
+  }
+
+  // BUG-R8-05: origin location ownership check — the approving warehouse_head
+  // must belong to the origin location. Mirrors the approveByDestination guard.
+  // admin and manager are exempt (they have no locationId but can act globally).
+  const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
+  if (!isPrivilegedRole && (!userLocationId || userLocationId !== movement.originLocationId)) {
+    throw new AppError(
+      'You can only approve movements where you are the origin location warehouse head',
+      403
+    );
   }
 
   const before = { status: movement.status };

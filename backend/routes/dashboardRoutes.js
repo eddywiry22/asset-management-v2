@@ -10,6 +10,7 @@ const {
   exportMovements,
   getLocations,
   getGoods,
+  getStockPeriodSummary,
 } = require('../controllers/dashboardController');
 
 const router = Router();
@@ -24,6 +25,9 @@ router.get('/stock-chart', getStockChartData);
 router.get('/movement-trends', getMovementTrends);
 router.get('/export/stock', exportStock);
 router.get('/export/movements', exportMovements);
+
+// BUG-R8-07: period-based stock summary (qty_before, inbound, outbound, qty_after, total_requests)
+router.get('/stock-period-summary', getStockPeriodSummary);
 
 // Filter dropdown data
 router.get('/locations', getLocations);

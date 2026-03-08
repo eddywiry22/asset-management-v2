@@ -40,6 +40,12 @@ const findById = async (id) => {
  * goods_id + location_id are resolved to a stock record (created if absent).
  */
 const requestAdjustment = async ({ goods_id, location_id, adjustment_type, quantity, reason }, requestedByUserId) => {
+  // Only `add` and `subtract` are allowed — `set` was removed because it has no
+  // computable signed delta and therefore cannot be included in period summaries.
+  if (!['add', 'subtract'].includes(adjustment_type)) {
+    throw new AppError(`Adjustment type "${adjustment_type}" is not allowed. Use "add" or "subtract".`, 422);
+  }
+
   // Validate goods exists and is ACTIVE before proceeding (BUG-R7-03)
   const goods = await Goods.unscoped().findByPk(goods_id);
   if (!goods) throw new AppError('Goods not found', 404);
@@ -113,11 +119,9 @@ const approveAdjustment = async (id, reviewedByUserId, review_note) => {
       case 'subtract':
         newQuantity = parseFloat(stock.quantity) - qty;
         break;
-      case 'set':
-        newQuantity = qty;
-        break;
       default:
-        throw new AppError('Unknown adjustment type', 500);
+        // `set` and any other legacy types are rejected at approval time.
+        throw new AppError(`Adjustment type "${adj.adjustment_type}" is no longer supported. Only "add" and "subtract" adjustments can be approved.`, 422);
     }
 
     if (newQuantity < 0) {

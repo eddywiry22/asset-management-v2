@@ -70,7 +70,14 @@ export default function DashboardPage() {
       .catch(() => {});
   }, []);
 
+  // BUG-R8-08: skip API calls when the date range exceeds 365 days
+  const rangeExceeded = (() => {
+    if (!filters.startDate || !filters.endDate) return false;
+    return Math.round((new Date(filters.endDate) - new Date(filters.startDate)) / 86400000) > 365;
+  })();
+
   const loadData = useCallback(async () => {
+    if (rangeExceeded) return;
     setLoading(true);
     setError(null);
     try {
@@ -91,7 +98,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [filters, rangeExceeded]);
 
   useEffect(() => {
     loadData();

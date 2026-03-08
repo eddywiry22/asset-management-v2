@@ -12,7 +12,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
       },
       adjustment_type: {
-        type: DataTypes.ENUM('add', 'subtract', 'set'),
+        // `set` has been removed — only traceable signed deltas are supported.
+        // A `set` adjustment has no computable net delta and therefore cannot
+        // participate in the period summary.  Existing `set` rows in the DB are
+        // left untouched but no new ones can be created through the application.
+        type: DataTypes.ENUM('add', 'subtract'),
         allowNull: false,
       },
       quantity: {

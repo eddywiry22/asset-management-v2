@@ -270,10 +270,10 @@ export default function MovementDetailPage() {
             <tbody className="divide-y divide-gray-100 bg-white">
               {details.map((d) => (
                 <tr key={d.id}>
-                  <td className="px-4 py-3 font-medium text-gray-900">{d.item?.name ?? '—'}</td>
-                  <td className="px-4 py-3 text-gray-500">{d.item?.sku ?? '—'}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">{d.goods?.name ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-500">{d.goods?.productId ?? '—'}</td>
                   <td className="px-4 py-3 text-right font-semibold text-gray-900 tabular-nums">
-                    {fmt(d.quantity)} <span className="text-xs font-normal text-gray-400">{d.item?.unit}</span>
+                    {fmt(d.quantity)}
                   </td>
                   <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{fmt(d.originQtyBefore)}</td>
                   <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{fmt(d.originQtyAfter)}</td>
