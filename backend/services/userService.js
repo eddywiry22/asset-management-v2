@@ -3,13 +3,7 @@ const { User, Location, MovementHeader } = require('../models');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
 const auditLogService = require('./auditLogService');
-
-/** Statuses that indicate a movement is not yet finalized or rejected */
-const ACTIVE_MOVEMENT_STATUSES = [
-  'PENDING_HEAD_APPROVAL',
-  'PENDING_DESTINATION_APPROVAL',
-  'APPROVED_READY_FOR_FINALIZATION',
-];
+const { ACTIVE_MOVEMENT_STATUSES } = require('../utils/constants');
 
 /**
  * Count non-finalized movement headers where this user is requester or approver.
@@ -22,6 +16,7 @@ const countActiveMovementsForUser = async (userId) => {
         { requestedById: userId },
         { headApprovedById: userId },
         { destApprovedById: userId },
+        { finalizedById: userId },
       ],
     },
   });
@@ -43,7 +38,7 @@ const list = async ({ search = '', page = 1, limit = 20, role } = {}) => {
   const offset = (page - 1) * limit;
   const { count, rows } = await User.findAndCountAll({
     where,
-    include: [{ association: 'location', attributes: ['id', 'name'] }],
+    include: [{ association: 'location', attributes: ['id', 'name'], paranoid: false }],
     order: [['name', 'ASC']],
     limit,
     offset,
@@ -60,10 +55,21 @@ const list = async ({ search = '', page = 1, limit = 20, role } = {}) => {
  */
 const getById = async (id) => {
   const user = await User.findByPk(id, {
-    include: [{ association: 'location', attributes: ['id', 'name'] }],
+    include: [{ association: 'location', attributes: ['id', 'name'], paranoid: false }],
   });
   if (!user) throw new AppError('User not found', 404);
   return user;
+};
+
+/**
+ * Return impact summary for a user before soft-delete.
+ */
+const getImpact = async (id) => {
+  const user = await User.findByPk(id);
+  if (!user) throw new AppError('User not found', 404);
+
+  const activeMovements = await countActiveMovementsForUser(id);
+  return { activeMovements };
 };
 
 /**
@@ -103,7 +109,7 @@ const create = async (data, performedBy) => {
   });
 
   return User.findByPk(user.id, {
-    include: [{ association: 'location', attributes: ['id', 'name'] }],
+    include: [{ association: 'location', attributes: ['id', 'name'], paranoid: false }],
   });
 };
 
@@ -174,14 +180,16 @@ const update = async (id, data, performedBy) => {
     after: updateData,
   });
 
-  return User.findByPk(id, {
-    include: [{ association: 'location', attributes: ['id', 'name'] }],
+  return user.reload({
+    include: [{ association: 'location', attributes: ['id', 'name'], paranoid: false }],
   });
 };
 
 /**
- * Delete (hard delete) a user by ID.
+ * Soft-delete a user by ID.
  * Blocked if user is involved in non-finalized movements.
+ * Blocked if user is deleting themselves.
+ * Blocked if this is the last active admin account.
  * @param {number} id
  * @param {number} performedBy - ID of the user performing the action
  */
@@ -190,6 +198,14 @@ const remove = async (id, performedBy) => {
   if (!user) throw new AppError('User not found', 404);
 
   if (user.id === performedBy) throw new AppError('You cannot delete your own account', 403);
+
+  // Guard: cannot delete the last active admin
+  if (user.role === 'admin') {
+    const activeAdminCount = await User.count({ where: { role: 'admin', status: 'ACTIVE' } });
+    if (activeAdminCount <= 1) {
+      throw new AppError('Cannot delete the last active admin account.', 409);
+    }
+  }
 
   const blockingCount = await countActiveMovementsForUser(id);
   if (blockingCount > 0) {
@@ -214,4 +230,4 @@ const remove = async (id, performedBy) => {
   });
 };
 
-module.exports = { list, getById, create, update, remove };
+module.exports = { list, getById, getImpact, create, update, remove };

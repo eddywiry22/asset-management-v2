@@ -65,6 +65,8 @@ module.exports = (sequelize, DataTypes) => {
       // that inactive goods must not be selectable in movement requests.
       // Use Goods.unscoped() or Goods.scope('withInactive') when admin access
       // to all goods is explicitly required.
+      paranoid: true,
+      deletedAt: 'deleted_at',
       defaultScope: {
         where: { status: 'ACTIVE' },
       },

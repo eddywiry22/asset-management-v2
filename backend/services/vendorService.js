@@ -118,22 +118,26 @@ const update = async (id, data, userId) => {
 };
 
 /**
- * Delete (hard delete) a vendor by ID.
- * Blocked if any Goods (active or inactive) still reference this vendor.
+ * Return impact summary for a vendor before soft-delete.
+ * @param {number} id
+ */
+const getImpact = async (id) => {
+  const vendor = await Vendor.findByPk(id);
+  if (!vendor) throw new AppError('Vendor not found', 404);
+
+  const goodsCount = await Goods.unscoped().count({ where: { vendor: id } });
+  return { goodsCount };
+};
+
+/**
+ * Soft-delete a vendor by ID.
+ * Goods retain their vendor FK (soft-delete preserves integrity).
  * @param {number} id
  * @param {number} userId - ID of the user performing the action
  */
 const remove = async (id, userId) => {
   const vendor = await Vendor.findByPk(id);
   if (!vendor) throw new AppError('Vendor not found', 404);
-
-  const goodsCount = await Goods.unscoped().count({ where: { vendor: id } });
-  if (goodsCount > 0) {
-    throw new AppError(
-      `Cannot delete vendor: ${goodsCount} good(s) reference this vendor. Reassign or delete those goods first.`,
-      409
-    );
-  }
 
   const snapshot = {
     name: vendor.name,
@@ -157,4 +161,4 @@ const remove = async (id, userId) => {
   });
 };
 
-module.exports = { list, getById, create, update, remove };
+module.exports = { list, getById, getImpact, create, update, remove };

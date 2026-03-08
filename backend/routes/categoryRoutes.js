@@ -33,6 +33,9 @@ router.get('/', validate(querySchema, 'query'), categoryController.list);
 // GET /api/categories/:id
 router.get('/:id', categoryController.getOne);
 
+// GET /api/categories/:id/impact
+router.get('/:id/impact', categoryController.getImpact);
+
 // POST /api/categories  (admin & warehouse_head only)
 router.post(
   '/',

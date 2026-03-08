@@ -17,6 +17,9 @@ const initialState = {
   // Delete confirmation
   deleting: null, // location id being deleted
   deleteError: null,
+  deleteTarget: null, // location object pending confirmation
+  impactData: null,
+  impactLoading: false,
   // Logs panel
   logs: null, // null | { locationId, entries: [], loading: bool }
 };
@@ -57,6 +60,14 @@ function reducer(state, action) {
       return { ...state, deleting: null, deleteError: action.payload };
     case 'CLEAR_DELETE_ERROR':
       return { ...state, deleteError: null };
+    case 'OPEN_DELETE_CONFIRM':
+      return { ...state, deleteTarget: action.payload, impactData: null, impactLoading: true };
+    case 'IMPACT_LOADED':
+      return { ...state, impactData: action.payload, impactLoading: false };
+    case 'IMPACT_ERROR':
+      return { ...state, impactLoading: false };
+    case 'CLOSE_DELETE_CONFIRM':
+      return { ...state, deleteTarget: null, impactData: null, impactLoading: false };
     case 'OPEN_LOGS':
       return { ...state, logs: { locationId: action.payload, entries: [], loading: true } };
     case 'LOGS_LOADED':
@@ -260,8 +271,20 @@ export default function LocationsPage() {
     }
   };
 
-  const handleDelete = async (location) => {
-    if (!window.confirm(`Delete "${location.name}"? This cannot be undone.`)) return;
+  const openDeleteConfirm = async (location) => {
+    dispatch({ type: 'OPEN_DELETE_CONFIRM', payload: location });
+    try {
+      const res = await locationService.getImpact(location.id);
+      dispatch({ type: 'IMPACT_LOADED', payload: res.data.data });
+    } catch {
+      dispatch({ type: 'IMPACT_ERROR' });
+    }
+  };
+
+  const handleDelete = async () => {
+    const location = state.deleteTarget;
+    if (!location) return;
+    dispatch({ type: 'CLOSE_DELETE_CONFIRM' });
     dispatch({ type: 'DELETE_START', payload: location.id });
     try {
       await locationService.remove(location.id);
@@ -356,7 +379,7 @@ export default function LocationsPage() {
                         <button
                           className="text-xs text-red-600 hover:underline"
                           disabled={state.deleting === loc.id}
-                          onClick={() => handleDelete(loc)}
+                          onClick={() => openDeleteConfirm(loc)}
                         >
                           {state.deleting === loc.id ? 'Deleting…' : 'Delete'}
                         </button>
@@ -386,7 +409,38 @@ export default function LocationsPage() {
         </Modal>
       )}
 
-      {/* Logs modal */}
+      {/* Delete Confirmation Modal */}
+      {state.deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+            <h2 className="mb-2 text-lg font-semibold text-gray-900">Delete Location</h2>
+            <p className="mb-2 text-sm text-gray-600">
+              Are you sure you want to delete <strong>{state.deleteTarget.name}</strong>? The record will be archived.
+            </p>
+            {state.impactLoading && <p className="mb-3 text-xs text-gray-400">Checking impact…</p>}
+            {state.impactData && (
+              <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {state.impactData.blockingMovements > 0
+                  ? <span><strong>{state.impactData.blockingMovements}</strong> active movement(s) use this location. Resolve them first.</span>
+                  : state.impactData.assignedUsers > 0
+                    ? <span><strong>{state.impactData.assignedUsers}</strong> user(s) are assigned here and will retain their location link.</span>
+                    : <span>No active dependencies found.</span>
+                }
+              </div>
+            )}
+            <div className="flex justify-end gap-3">
+              <button className="btn" onClick={() => dispatch({ type: 'CLOSE_DELETE_CONFIRM' })}>
+                Cancel
+              </button>
+              <button className="btn bg-red-600 text-white hover:bg-red-700" onClick={handleDelete}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+            {/* Logs modal */}
       <LogsPanel logsState={state.logs} onClose={() => dispatch({ type: 'CLOSE_LOGS' })} />
     </div>
   );

@@ -70,6 +70,8 @@ module.exports = (sequelize, DataTypes) => {
     {
       tableName: 'users',
       timestamps: true,
+      paranoid: true,
+      deletedAt: 'deleted_at',
       // Never return the password in JSON serialization
       defaultScope: {
         attributes: { exclude: ['password'] },

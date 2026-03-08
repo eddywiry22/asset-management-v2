@@ -55,4 +55,13 @@ const getLogs = async (req, res, next) => {
   }
 };
 
-module.exports = { getAll, getById, create, update, remove, getLogs };
+const getImpact = async (req, res, next) => {
+  try {
+    const impact = await locationService.getImpact(Number(req.params.id));
+    return success(res, impact, 'Location impact retrieved');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { getAll, getById, getImpact, create, update, remove, getLogs };

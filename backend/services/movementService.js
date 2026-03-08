@@ -2,12 +2,7 @@ const { Op } = require('sequelize');
 const { sequelize, MovementHeader, MovementDetail, Location, Goods, Stock, User } = require('../models');
 const AppError = require('../utils/AppError');
 const { createAuditLog } = require('./auditLogService');
-
-const ACTIVE_STATUSES = [
-  'PENDING_HEAD_APPROVAL',
-  'PENDING_DESTINATION_APPROVAL',
-  'APPROVED_READY_FOR_FINALIZATION',
-];
+const { ACTIVE_MOVEMENT_STATUSES: ACTIVE_STATUSES } = require('../utils/constants');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,17 +28,17 @@ const fetchStockQty = async (locationId, goodsId, transaction = null) => {
 };
 
 const withFullIncludes = () => [
-  { model: Location, as: 'originLocation', attributes: ['id', 'name', 'status'] },
-  { model: Location, as: 'destinationLocation', attributes: ['id', 'name', 'status'] },
-  { model: User, as: 'requestedBy', attributes: ['id', 'name', 'email'] },
-  { model: User, as: 'headApprovedBy', attributes: ['id', 'name', 'email'] },
-  { model: User, as: 'destApprovedBy', attributes: ['id', 'name', 'email'] },
-  { model: User, as: 'finalizedBy', attributes: ['id', 'name', 'email'] },
-  { model: User, as: 'rejectedBy', attributes: ['id', 'name', 'email'] },
+  { model: Location, as: 'originLocation', attributes: ['id', 'name', 'status'], paranoid: false },
+  { model: Location, as: 'destinationLocation', attributes: ['id', 'name', 'status'], paranoid: false },
+  { model: User, as: 'requestedBy', attributes: ['id', 'name', 'email'], paranoid: false },
+  { model: User, as: 'headApprovedBy', attributes: ['id', 'name', 'email'], paranoid: false },
+  { model: User, as: 'destApprovedBy', attributes: ['id', 'name', 'email'], paranoid: false },
+  { model: User, as: 'finalizedBy', attributes: ['id', 'name', 'email'], paranoid: false },
+  { model: User, as: 'rejectedBy', attributes: ['id', 'name', 'email'], paranoid: false },
   {
     model: MovementDetail,
     as: 'details',
-    include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'productId', 'status'] }],
+    include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'productId', 'status'], paranoid: false }],
   },
 ];
 
@@ -308,9 +303,9 @@ const listMovements = async ({ status, page = 1, limit = 20 } = {}) => {
   const { count, rows } = await MovementHeader.findAndCountAll({
     where,
     include: [
-      { model: Location, as: 'originLocation', attributes: ['id', 'name'] },
-      { model: Location, as: 'destinationLocation', attributes: ['id', 'name'] },
-      { model: User, as: 'requestedBy', attributes: ['id', 'name'] },
+      { model: Location, as: 'originLocation', attributes: ['id', 'name'], paranoid: false },
+      { model: Location, as: 'destinationLocation', attributes: ['id', 'name'], paranoid: false },
+      { model: User, as: 'requestedBy', attributes: ['id', 'name'], paranoid: false },
       { model: MovementDetail, as: 'details', attributes: ['id', 'goodsId'] },
     ],
     order: [['createdAt', 'DESC']],

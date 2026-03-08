@@ -10,6 +10,7 @@ const update = (id, data) => api.patch(`/locations/${id}`, data);
 
 const remove = (id) => api.delete(`/locations/${id}`);
 
+const getImpact = (id) => api.get(`/locations/${id}/impact`);
 const getLogs = (id) => api.get(`/locations/${id}/logs`);
 
-export default { getAll, getById, create, update, remove, getLogs };
+export default { getAll, getById, getImpact, create, update, remove, getLogs };

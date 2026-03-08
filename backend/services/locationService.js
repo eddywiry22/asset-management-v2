@@ -134,9 +134,30 @@ const update = async (id, data, performedBy) => {
 };
 
 /**
- * Delete a location by ID.
- * Blocked if non-finalized movement requests reference this location,
- * or if any users are still assigned to this location.
+ * Return impact summary for a location before soft-delete.
+ * @param {number} id
+ */
+const getImpact = async (id) => {
+  const location = await Location.findByPk(id);
+  if (!location) throw new AppError('Location not found', 404);
+
+  const [blockingMovements, assignedUsers] = await Promise.all([
+    MovementRequest.count({
+      where: {
+        status: { [Op.in]: NON_FINALIZED_STATUSES },
+        [Op.or]: [{ fromLocationId: id }, { toLocationId: id }],
+      },
+    }),
+    User.count({ where: { locationId: id } }),
+  ]);
+
+  return { blockingMovements, assignedUsers };
+};
+
+/**
+ * Soft-delete a location by ID.
+ * Blocked if non-finalized movement requests reference this location.
+ * Assigned users retain their locationId FK (soft-delete preserves integrity).
  * @param {number} id
  * @param {number} performedBy - User ID of the actor
  */
@@ -155,15 +176,6 @@ const remove = async (id, performedBy) => {
   if (blockingMovements > 0) {
     throw new AppError(
       `Cannot delete location: ${blockingMovements} non-finalized movement request(s) involve this location.`,
-      409
-    );
-  }
-
-  // Block deletion if users are still assigned to this location
-  const assignedUsers = await User.count({ where: { locationId: id } });
-  if (assignedUsers > 0) {
-    throw new AppError(
-      `Cannot delete location: ${assignedUsers} user(s) are assigned to this location. Reassign them first.`,
       409
     );
   }
@@ -198,4 +210,4 @@ const getLogs = async (id) => {
   });
 };
 
-module.exports = { getAll, getById, create, update, remove, getLogs };
+module.exports = { getAll, getById, getImpact, create, update, remove, getLogs };

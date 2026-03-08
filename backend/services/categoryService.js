@@ -105,22 +105,26 @@ const update = async (id, data, userId) => {
 };
 
 /**
- * Delete (hard delete) a category by ID.
- * Blocked if any Goods (active or inactive) still reference this category.
+ * Return impact summary for a category before soft-delete.
+ * @param {number} id
+ */
+const getImpact = async (id) => {
+  const category = await Category.findByPk(id);
+  if (!category) throw new AppError('Category not found', 404);
+
+  const goodsCount = await Goods.unscoped().count({ where: { category: id } });
+  return { goodsCount };
+};
+
+/**
+ * Soft-delete a category by ID.
+ * Goods retain their category FK (soft-delete preserves integrity).
  * @param {number} id
  * @param {number} userId - ID of the user performing the action
  */
 const remove = async (id, userId) => {
   const category = await Category.findByPk(id);
   if (!category) throw new AppError('Category not found', 404);
-
-  const goodsCount = await Goods.unscoped().count({ where: { category: id } });
-  if (goodsCount > 0) {
-    throw new AppError(
-      `Cannot delete category: ${goodsCount} good(s) reference this category. Reassign or delete those goods first.`,
-      409
-    );
-  }
 
   const snapshot = { name: category.name, description: category.description, isActive: category.isActive };
   await category.destroy();
@@ -137,4 +141,4 @@ const remove = async (id, userId) => {
   });
 };
 
-module.exports = { list, getById, create, update, remove };
+module.exports = { list, getById, getImpact, create, update, remove };

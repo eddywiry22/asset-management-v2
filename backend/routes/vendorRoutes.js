@@ -39,6 +39,9 @@ router.get('/', validate(querySchema, 'query'), vendorController.list);
 // GET /api/vendors/:id
 router.get('/:id', vendorController.getOne);
 
+// GET /api/vendors/:id/impact
+router.get('/:id/impact', vendorController.getImpact);
+
 // POST /api/vendors  (admin & warehouse_head only)
 router.post(
   '/',

@@ -23,6 +23,8 @@ export default function VendorsPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [impactData, setImpactData] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
 
   const fetchVendors = useCallback(async () => {
     setLoading(true);
@@ -106,10 +108,12 @@ export default function VendorsPage() {
       await vendorService.remove(confirmDelete.id);
       setAlert({ type: 'success', message: `"${confirmDelete.name}" deleted` });
       setConfirmDelete(null);
+      setImpactData(null);
       fetchVendors();
     } catch (err) {
       setAlert({ type: 'error', message: err.response?.data?.message ?? 'Failed to delete vendor' });
       setConfirmDelete(null);
+      setImpactData(null);
     }
   };
 
@@ -200,7 +204,16 @@ export default function VendorsPage() {
                     {canDelete && (
                       <button
                         className="text-red-600 hover:underline text-sm"
-                        onClick={() => setConfirmDelete(v)}
+                        onClick={async () => {
+                          setConfirmDelete(v);
+                          setImpactData(null);
+                          setImpactLoading(true);
+                          try {
+                            const res = await vendorService.impact(v.id);
+                            setImpactData(res.data.data);
+                          } catch {}
+                          finally { setImpactLoading(false); }
+                        }}
                       >
                         Delete
                       </button>
@@ -318,12 +331,20 @@ export default function VendorsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
             <h2 className="mb-2 text-lg font-semibold text-gray-900">Delete Vendor</h2>
-            <p className="mb-4 text-sm text-gray-600">
-              Are you sure you want to delete <strong>{confirmDelete.name}</strong>? This action cannot be
-              undone.
+            <p className="mb-2 text-sm text-gray-600">
+              Are you sure you want to delete <strong>{confirmDelete.name}</strong>? The record will be archived.
             </p>
+            {impactLoading && <p className="mb-3 text-xs text-gray-400">Checking impact…</p>}
+            {impactData && (
+              <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {impactData.goodsCount > 0
+                  ? <span><strong>{impactData.goodsCount}</strong> goods reference this vendor and will retain their link.</span>
+                  : <span>No affected records found.</span>
+                }
+              </div>
+            )}
             <div className="flex justify-end gap-3">
-              <button className="btn" onClick={() => setConfirmDelete(null)}>
+              <button className="btn" onClick={() => { setConfirmDelete(null); setImpactData(null); }}>
                 Cancel
               </button>
               <button className="btn bg-red-600 text-white hover:bg-red-700" onClick={handleDelete}>

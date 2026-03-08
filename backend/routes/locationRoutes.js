@@ -38,6 +38,9 @@ router.get('/:id', validate(idSchema, 'params'), locationController.getById);
 // GET /api/locations/:id/logs
 router.get('/:id/logs', validate(idSchema, 'params'), locationController.getLogs);
 
+// GET /api/locations/:id/impact
+router.get('/:id/impact', validate(idSchema, 'params'), locationController.getImpact);
+
 // POST /api/locations  (admin & warehouse_head only)
 router.post('/', authorize('admin', 'warehouse_head'), validate(createSchema), locationController.create);
 

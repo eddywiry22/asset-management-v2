@@ -52,4 +52,13 @@ const remove = async (req, res, next) => {
   }
 };
 
-module.exports = { list, getOne, create, update, remove };
+const getImpact = async (req, res, next) => {
+  try {
+    const impact = await userService.getImpact(Number(req.params.id));
+    return success(res, impact, 'User impact retrieved');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { list, getOne, getImpact, create, update, remove };
