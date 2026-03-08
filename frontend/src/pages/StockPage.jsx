@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getStocks } from '@/services/stockService';
-import { getGoods } from '@/services/goodsService';
-import { getLocations } from '@/services/locationService';
+import { listGoods } from '@/services/goodsService';
+import locationService from '@/services/locationService';
 
 export default function StockPage() {
   const [stocks, setStocks] = useState([]);
@@ -29,8 +29,8 @@ export default function StockPage() {
   }, [filterGoods, filterLocation]);
 
   useEffect(() => {
-    getGoods({ isActive: true }).then((r) => setGoodsList(r.data || [])).catch(() => {});
-    getLocations({ isActive: true }).then((r) => setLocationsList(r.data || [])).catch(() => {});
+    listGoods().then((r) => setGoodsList(r.data || [])).catch(() => {});
+    locationService.getAll().then((r) => setLocationsList(r.data?.data || [])).catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);

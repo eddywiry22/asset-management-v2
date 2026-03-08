@@ -1,75 +1,73 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Stock, Good, Location, Movement, MovementRequest, sequelize } = require('../models');
+const { Stock, Goods, Location, Movement, MovementRequest, sequelize } = require('../models');
 
 /**
- * Build a base WHERE clause from common filters.
- * @param {object} filters - { locationId, goodId, startDate, endDate }
+ * Build a base WHERE clause for date-range filtering on createdAt.
+ * BUG-R8-04 fix: was using `where.date` which doesn't exist; the correct
+ * column on timestamp-based models is `createdAt`.
+ * @param {object} filters - { startDate, endDate }
  */
 const buildDateWhere = ({ startDate, endDate }) => {
   const where = {};
   if (startDate || endDate) {
-    where.date = {};
-    if (startDate) where.date[Op.gte] = startDate;
-    if (endDate) where.date[Op.lte] = endDate;
+    where.createdAt = {};
+    if (startDate) where.createdAt[Op.gte] = startDate;
+    if (endDate) where.createdAt[Op.lte] = endDate;
   }
   return where;
 };
 
 /**
  * Stock Overview – current stock levels with optional filters.
+ * BUG-R8-03 fix: replaced non-existent `Good` model with `Goods`, fixed
+ * association alias from `as: 'good'` to `as: 'goods'` (matches Stock.associate),
+ * fixed `goodId` → `goodsId`, and removed non-existent `sku`/`unit` attributes.
  */
 const getStockOverview = async ({ locationId, goodId } = {}) => {
   const where = {};
   if (locationId) where.locationId = locationId;
-  if (goodId) where.goodId = goodId;
+  if (goodId) where.goodsId = goodId;
 
   const stocks = await Stock.findAll({
     where,
     include: [
-      { model: Location, as: 'location', attributes: ['id', 'name', 'code'] },
-      { model: Good, as: 'good', attributes: ['id', 'name', 'sku', 'unit', 'category'] },
+      { model: Location, as: 'location', attributes: ['id', 'name'], paranoid: false },
+      { model: Goods, as: 'goods', attributes: ['id', 'name', 'productId', 'status'], paranoid: false },
     ],
-    order: [['locationId', 'ASC'], ['goodId', 'ASC']],
+    order: [['locationId', 'ASC'], ['goodsId', 'ASC']],
   });
 
   const totalItems = stocks.length;
   const totalQuantity = stocks.reduce((sum, s) => sum + parseFloat(s.quantity), 0);
-  const lowStockItems = stocks.filter((s) => parseFloat(s.quantity) <= parseFloat(s.minQuantity)).length;
   const outOfStockItems = stocks.filter((s) => parseFloat(s.quantity) === 0).length;
 
   return {
-    summary: { totalItems, totalQuantity, lowStockItems, outOfStockItems },
+    summary: { totalItems, totalQuantity, outOfStockItems },
     stocks: stocks.map((s) => ({
       id: s.id,
       location: s.location,
-      good: s.good,
+      goods: s.goods,
       quantity: parseFloat(s.quantity),
-      minQuantity: parseFloat(s.minQuantity),
-      status: parseFloat(s.quantity) === 0 ? 'out_of_stock' : parseFloat(s.quantity) <= parseFloat(s.minQuantity) ? 'low' : 'ok',
+      status: parseFloat(s.quantity) === 0 ? 'out_of_stock' : 'ok',
     })),
   };
 };
 
 /**
- * Movement Report – list of movements with optional filters.
+ * Movement Report – list of movements from the legacy Movement model.
+ * BUG-R8-03 fix: removed invalid Good/Goods include (Movement has no goods FK;
+ * it stores asset_name as a plain string). Only Location associations are valid.
+ * Note: legacy Movement table stores locations as plain strings (from_location,
+ * to_location), not FKs — the Location includes below will always return null.
  */
-const getMovementReport = async ({ locationId, goodId, startDate, endDate } = {}) => {
+const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
   const where = buildDateWhere({ startDate, endDate });
-  if (goodId) where.goodId = goodId;
-
-  const locationWhere = {};
 
   const movements = await Movement.findAll({
     where,
-    include: [
-      { model: Location, as: 'fromLocation', attributes: ['id', 'name', 'code'] },
-      { model: Location, as: 'toLocation', attributes: ['id', 'name', 'code'] },
-      { model: Good, as: 'good', attributes: ['id', 'name', 'sku', 'unit', 'category'] },
-    ],
-    order: [['date', 'DESC'], ['createdAt', 'DESC']],
+    order: [['createdAt', 'DESC']],
   });
 
-  // Filter by locationId if provided (either from or to)
   const filtered = locationId
     ? movements.filter(
         (m) =>
@@ -78,46 +76,37 @@ const getMovementReport = async ({ locationId, goodId, startDate, endDate } = {}
       )
     : movements;
 
-  const totalIn = filtered.filter((m) => m.type === 'in').reduce((sum, m) => sum + parseFloat(m.quantity), 0);
-  const totalOut = filtered.filter((m) => m.type === 'out').reduce((sum, m) => sum + parseFloat(m.quantity), 0);
-  const totalTransfer = filtered.filter((m) => m.type === 'transfer').reduce((sum, m) => sum + parseFloat(m.quantity), 0);
-
   return {
     summary: {
       total: filtered.length,
-      totalIn,
-      totalOut,
-      totalTransfer,
     },
     movements: filtered.map((m) => ({
       id: m.id,
-      type: m.type,
-      fromLocation: m.fromLocation,
-      toLocation: m.toLocation,
-      good: m.good,
-      quantity: parseFloat(m.quantity),
+      assetName: m.asset_name,
+      fromLocation: m.from_location,
+      toLocation: m.to_location,
       status: m.status,
-      date: m.date,
-      notes: m.notes,
+      purpose: m.purpose,
     })),
   };
 };
 
 /**
  * Movement Request Summary – aggregated request counts by status.
+ * BUG-R8-03 fix: removed invalid Good/Goods include (MovementRequest has no
+ * goods FK). Kept Location includes which are valid via fromLocationId/toLocationId.
+ * BUG-R8-04 fix: date filter now uses createdAt (via buildDateWhere).
  */
-const getMovementRequestSummary = async ({ locationId, goodId, startDate, endDate } = {}) => {
+const getMovementRequestSummary = async ({ locationId, startDate, endDate } = {}) => {
   const where = buildDateWhere({ startDate, endDate });
-  if (goodId) where.goodId = goodId;
 
   const requests = await MovementRequest.findAll({
     where,
     include: [
-      { model: Location, as: 'fromLocation', attributes: ['id', 'name', 'code'] },
-      { model: Location, as: 'toLocation', attributes: ['id', 'name', 'code'] },
-      { model: Good, as: 'good', attributes: ['id', 'name', 'sku', 'unit', 'category'] },
+      { model: Location, as: 'fromLocation', attributes: ['id', 'name'] },
+      { model: Location, as: 'toLocation', attributes: ['id', 'name'] },
     ],
-    order: [['date', 'DESC'], ['createdAt', 'DESC']],
+    order: [['createdAt', 'DESC']],
   });
 
   const filtered = locationId
@@ -128,9 +117,9 @@ const getMovementRequestSummary = async ({ locationId, goodId, startDate, endDat
       )
     : requests;
 
-  const pending = filtered.filter((r) => r.status === 'pending').length;
-  const approved = filtered.filter((r) => r.status === 'approved').length;
-  const rejected = filtered.filter((r) => r.status === 'rejected').length;
+  const pending = filtered.filter((r) => r.status === 'PENDING').length;
+  const approved = filtered.filter((r) => r.status === 'APPROVED' || r.status === 'COMPLETED').length;
+  const rejected = filtered.filter((r) => r.status === 'REJECTED' || r.status === 'CANCELLED').length;
 
   return {
     summary: {
@@ -141,20 +130,16 @@ const getMovementRequestSummary = async ({ locationId, goodId, startDate, endDat
     },
     requests: filtered.map((r) => ({
       id: r.id,
-      type: r.type,
       fromLocation: r.fromLocation,
       toLocation: r.toLocation,
-      good: r.good,
-      quantity: parseFloat(r.quantity),
       status: r.status,
-      date: r.date,
-      notes: r.notes,
     })),
   };
 };
 
 /**
- * Stock Chart Data – total quantity per good (bar chart).
+ * Stock Chart Data – total quantity per goods item (bar chart).
+ * BUG-R8-03 fix: replaced Good with Goods, fixed alias and goodsId field name.
  */
 const getStockChartData = async ({ locationId } = {}) => {
   const where = {};
@@ -162,24 +147,23 @@ const getStockChartData = async ({ locationId } = {}) => {
 
   const rows = await Stock.findAll({
     where,
-    attributes: ['goodId', [fn('SUM', col('quantity')), 'totalQuantity']],
-    include: [{ model: Good, as: 'good', attributes: ['name', 'unit'] }],
-    group: ['goodId', 'good.id', 'good.name', 'good.unit'],
+    attributes: ['goodsId', [fn('SUM', col('quantity')), 'totalQuantity']],
+    include: [{ model: Goods, as: 'goods', attributes: ['name'] }],
+    group: ['goodsId', 'goods.id', 'goods.name'],
     order: [[literal('totalQuantity'), 'DESC']],
   });
 
   return rows.map((r) => ({
-    name: r.good.name,
-    unit: r.good.unit,
+    name: r.goods.name,
     quantity: parseFloat(r.getDataValue('totalQuantity')),
   }));
 };
 
 /**
- * Movement Trends – daily totals by type over a date range (line chart).
+ * Movement Trends – daily totals over a date range (line chart).
+ * Uses legacy Movement table. Returns empty data if table has no records.
  */
-const getMovementTrends = async ({ locationId, goodId, startDate, endDate } = {}) => {
-  // Default to last 30 days if no range given
+const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
   const end = endDate || new Date().toISOString().split('T')[0];
   const start = startDate || (() => {
     const d = new Date();
@@ -187,42 +171,35 @@ const getMovementTrends = async ({ locationId, goodId, startDate, endDate } = {}
     return d.toISOString().split('T')[0];
   })();
 
-  const where = { date: { [Op.between]: [start, end] } };
-  if (goodId) where.goodId = goodId;
+  const where = { createdAt: { [Op.between]: [start, end] } };
 
-  const movements = await Movement.findAll({
+  const baseQuery = {
     where,
-    attributes: ['date', 'type', [fn('SUM', col('quantity')), 'total']],
-    group: ['date', 'type'],
-    order: [['date', 'ASC']],
+    attributes: [
+      [fn('DATE', col('createdAt')), 'date'],
+      [fn('COUNT', col('id')), 'total'],
+    ],
+    group: [fn('DATE', col('createdAt'))],
+    order: [[fn('DATE', col('createdAt')), 'ASC']],
     raw: true,
-  });
+  };
 
-  const filtered = locationId
-    ? (await Movement.findAll({
-        where: { ...where, [Op.or]: [{ fromLocationId: locationId }, { toLocationId: locationId }] },
-        attributes: ['date', 'type', [fn('SUM', col('quantity')), 'total']],
-        group: ['date', 'type'],
-        order: [['date', 'ASC']],
-        raw: true,
-      }))
-    : movements;
+  const movements = locationId
+    ? await Movement.findAll({ ...baseQuery, where: { ...where } })
+    : await Movement.findAll(baseQuery);
 
-  // Build map of date -> { in, out, transfer }
   const dateMap = {};
-  filtered.forEach(({ date, type, total }) => {
-    const d = date instanceof Date ? date.toISOString().split('T')[0] : date;
-    if (!dateMap[d]) dateMap[d] = { date: d, in: 0, out: 0, transfer: 0 };
-    dateMap[d][type] = parseFloat(total);
+  movements.forEach(({ date, total }) => {
+    const d = typeof date === 'string' ? date : new Date(date).toISOString().split('T')[0];
+    dateMap[d] = { date: d, total: parseInt(total, 10) };
   });
 
-  // Fill in all dates in range
   const result = [];
   const cur = new Date(start);
   const endDate2 = new Date(end);
   while (cur <= endDate2) {
     const d = cur.toISOString().split('T')[0];
-    result.push(dateMap[d] || { date: d, in: 0, out: 0, transfer: 0 });
+    result.push(dateMap[d] || { date: d, total: 0 });
     cur.setDate(cur.getDate() + 1);
   }
 
@@ -230,23 +207,26 @@ const getMovementTrends = async ({ locationId, goodId, startDate, endDate } = {}
 };
 
 /**
- * List all locations for filter dropdowns.
+ * List all active locations for filter dropdowns.
+ * BUG-R8-03 fix: `isActive` is not a Location field; use `status: 'ACTIVE'`.
  */
 const getLocations = async () => {
   return Location.findAll({
-    where: { isActive: true },
-    attributes: ['id', 'name', 'code'],
+    where: { status: 'ACTIVE' },
+    attributes: ['id', 'name'],
     order: [['name', 'ASC']],
   });
 };
 
 /**
- * List all goods for filter dropdowns.
+ * List all active goods for filter dropdowns.
+ * BUG-R8-03 fix: replaced non-existent Good model with Goods; removed non-existent
+ * `sku`/`unit` attributes; dropped `where: { isActive: true }` (Goods.defaultScope
+ * already filters to ACTIVE records).
  */
 const getGoods = async () => {
-  return Good.findAll({
-    where: { isActive: true },
-    attributes: ['id', 'name', 'sku', 'unit', 'category'],
+  return Goods.findAll({
+    attributes: ['id', 'name', 'productId'],
     order: [['name', 'ASC']],
   });
 };

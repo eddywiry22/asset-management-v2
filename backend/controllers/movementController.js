@@ -22,8 +22,8 @@ const create = async (req, res, next) => {
 
 const list = async (req, res, next) => {
   try {
-    const { status, page, limit } = req.query;
-    const result = await movementService.listMovements({ status, page, limit });
+    const { status, page, limit, originLocationId, destinationLocationId } = req.query;
+    const result = await movementService.listMovements({ status, page, limit, originLocationId, destinationLocationId });
     return success(res, result.movements, 'Movements retrieved', 200, result.meta);
   } catch (err) {
     return next(err);
@@ -41,7 +41,14 @@ const getOne = async (req, res, next) => {
 
 const approveHead = async (req, res, next) => {
   try {
-    const movement = await movementService.approveByHead(req.user.id, req.params.id);
+    // BUG-R8-05: pass locationId and role so the service can enforce that only
+    // the warehouse_head of the origin location may approve the movement.
+    const movement = await movementService.approveByHead(
+      req.user.id,
+      req.params.id,
+      req.user.locationId,
+      req.user.role
+    );
     return success(res, movement, 'Movement approved by warehouse head');
   } catch (err) {
     return next(err);
