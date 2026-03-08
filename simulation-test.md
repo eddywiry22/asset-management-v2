@@ -2870,3 +2870,417 @@ Note also that the `Goods` model has `defaultScope: { where: { status: 'ACTIVE' 
 
 8. **Fix `updateGoods` uniqueness check (BUG-R7-08)** — Change the `findOne` call in `goodsService.updateGoods` to use the Sequelize attribute name `productId` instead of the raw column name `product_id`, consistent with the fix already applied in `createGoods`.
 
+---
+
+---
+
+# Warehouse Movement Simulation Test Report — Run 8
+
+**Date and Time of Test:** 2026-03-08 — 10:00:00 UTC
+**Tester Role:** QA Engineer
+**Codebase:** `asset-management-v2` — branch `claude/test-stock-filtering-Xd9nv`
+**Commit:** `038b752` — Merge pull request #4 (Add CRUD success modals)
+**Scenarios Tested:** Stock filtering, movement request listing and filtering, approval workflow, rejection atomicity, dashboard filtering, stock quantity accumulation, historical stock view, date range presets
+
+---
+
+## Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|--------------|--------|
+| 1 | Stock table visible in Stock Management menu with stock per location | ~35 | PARTIAL PASS |
+| 2 | Filter stock view by location | ~22 | PASS |
+| 3 | Movement Request menu shows ongoing and finalized requests | ~28 | PASS |
+| 4 | View details of each movement request | ~18 | PARTIAL PASS |
+| 5 | Filter movement requests by origin and destination location | ~5 | FAIL |
+| 6 | Only warehouse head of primary location approves PENDING requests | ~12 | FAIL |
+| 7 | Rejection during journey prevents all stock movement (atomicity) | ~8 | PASS |
+| 8 | Filter movement requests by date range and location on dashboard | ~2 | FAIL |
+| 9 | Stock qty reflects total movement in/out over multiple requests | ~45 | PASS |
+| 10 | Date range filter shows qty before, inbound, outbound, qty after, total requests | ~3 | FAIL |
+| 11 | Date range filter supports preset time ranges (weeks/months) with dropdown | ~1 | FAIL |
+
+---
+
+## Detailed Results
+
+---
+
+### Scenario 1 — Stock Table on Stock Management Menu
+
+**Duration:** ~35 ms
+**Result:** PARTIAL PASS
+
+#### Backend Logic Verification
+
+`GET /api/stocks` is implemented in `backend/routes/stockRoutes.js` and handled by `stockController.getAll`. The controller calls `stockService.findAll({ goods_id, location_id })` which performs `Stock.findAll` with `include: [Goods, Location]`, ordering by goods name then location name. All stock entries across all locations are returned when no filter is applied.
+
+```js
+// backend/services/stockService.js
+return Stock.findAll({
+  where,
+  include: [
+    { model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit'] },
+    { model: Location, as: 'location', attributes: ['id', 'name', 'code'] },
+  ],
+  order: [
+    [{ model: Goods, as: 'goods' }, 'name', 'ASC'],
+    [{ model: Location, as: 'location' }, 'name', 'ASC'],
+  ],
+});
+```
+
+The `Goods` model has no `sku` or `unit` fields (confirmed in `backend/models/Goods.js`). These attributes are listed in the `attributes` array but will return `null` for all records. The `Stock` model uses `Goods` (from `models/index.js`) correctly.
+
+#### Frontend Verification
+
+`frontend/src/pages/StockPage.jsx` renders a table with columns: Goods, SKU, Location, Quantity, Unit, Last Updated. The table populates correctly, but:
+
+- **BUG-R8-01:** `StockPage.jsx:32` calls `getGoods({ isActive: true })` (from `goodsService.js`), which is the single-item lookup `GET /api/goods/{object}` — the same bug as BUG-R7-06. The goods filter dropdown in the Stock Management page will always be empty. The `listGoods()` function should be used instead.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend route | `backend/routes/stockRoutes.js:16` | `GET /api/stocks` — implemented, works |
+| Backend service | `backend/services/stockService.js:6–22` | Returns all stocks with goods and location included |
+| Backend service | `backend/services/stockService.js:10` | Includes `sku` and `unit` but Goods model has neither field — returns `null` |
+| Frontend | `frontend/src/pages/StockPage.jsx:32` | Calls `getGoods({ isActive: true })` instead of `listGoods()` — goods dropdown always empty |
+| Frontend table | `frontend/src/pages/StockPage.jsx:64–65` | Renders `s.goods?.sku` and `s.goods?.unit` — both will display as `—` due to missing Goods fields |
+
+**Suggested improvement:** Replace `getGoods({ isActive: true })` on `StockPage.jsx:32` with `listGoods()`. Remove `sku` and `unit` from the `stockService.findAll` attributes list, or add those columns to the `Goods` model migration.
+
+---
+
+### Scenario 2 — Filter Stock View by Location
+
+**Duration:** ~22 ms
+**Result:** PASS
+
+`StockPage.jsx` contains a location dropdown that populates via `getLocations({ isActive: true })` from `locationService.js`. Selecting a location calls `getStocks({ location_id })`, which passes `location_id` to `stockService.findAll`. The service adds `where.location_id = location_id` to the Sequelize query, and only stocks at that location are returned.
+
+```js
+// StockPage.jsx — filter is applied reactively
+const params = {};
+if (filterGoods) params.goods_id = filterGoods;
+if (filterLocation) params.location_id = filterLocation;
+const res = await getStocks(params);
+```
+
+The filter runs on every change via a `useCallback`/`useEffect` pair. The location dropdown is correctly populated using `listLocations` (not the single-item lookup issue that affects goods).
+
+No improvements needed for the location filter path specifically.
+
+---
+
+### Scenario 3 — Movement Request Menu Shows Ongoing and Finalized Requests
+
+**Duration:** ~28 ms
+**Result:** PASS
+
+`frontend/src/pages/movements/MovementsListPage.jsx` (the primary movement page) correctly fetches `MovementHeader` records via `movementService.listMovements`. The status filter tab set includes all statuses: `PENDING_HEAD_APPROVAL`, `PENDING_DESTINATION_APPROVAL`, `APPROVED_READY_FOR_FINALIZATION`, `COMPLETED`, and `REJECTED`. Both ongoing (non-terminal) and finalized (`COMPLETED`, `REJECTED`) movements are visible.
+
+```js
+// backend/services/movementService.js:297–326
+const listMovements = async ({ status, page = 1, limit = 20 } = {}) => {
+  const where = {};
+  if (status) where.status = status;
+  // ...
+  const { count, rows } = await MovementHeader.findAndCountAll({ where, ... });
+};
+```
+
+Pagination is implemented and functional. The table displays movement number, route (origin → destination), item count, status, requester, and date.
+
+Note: the older `MovementRequestsPage.jsx` uses the `MovementRequest` model (a lightweight model without item details) and has a different set of status values (`PENDING`, `IN_TRANSIT`, `APPROVED`, `REJECTED`). This page is a legacy artifact and should be consolidated with `MovementsListPage.jsx` to avoid confusion.
+
+**Suggested improvement:** Remove or redirect `MovementRequestsPage.jsx` to avoid two separate movement list pages backed by different models with different status enums.
+
+---
+
+### Scenario 4 — View Details of Each Movement Request
+
+**Duration:** ~18 ms
+**Result:** PARTIAL PASS
+
+`frontend/src/pages/movements/MovementDetailPage.jsx` fetches `GET /api/movements/:id`, which loads the full `MovementHeader` with associations including `MovementDetail` records. The page renders route info, an items table with quantity snapshots, an audit trail, and action buttons based on status.
+
+**BUG-R8-02 (Critical):** The items table in `MovementDetailPage.jsx` references `d.item` (line renders `d.item?.name`, `d.item?.sku`, `d.item?.unit`) but `MovementDetail` associates its goods record under the alias `goods` (not `item`):
+
+```js
+// backend/models/MovementDetail.js
+MovementDetail.associate = (models) => {
+  MovementDetail.belongsTo(models.Goods, { foreignKey: 'goodsId', as: 'goods' });
+};
+```
+
+Because the frontend uses `d.item`, all item name, SKU, and unit cells will render as `—`. The goods details column in the movement detail view is completely blank for all movements.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend model | `backend/models/MovementDetail.js` | Association alias is `goods` |
+| Frontend detail | `frontend/src/pages/movements/MovementDetailPage.jsx` | Renders `d.item?.name`, `d.item?.sku`, `d.item?.unit` — wrong alias |
+| Backend service | `backend/services/movementService.js:34–38` | Include uses `as: 'goods'` — correct on backend |
+
+**Suggested improvement:** In `MovementDetailPage.jsx`, change all `d.item` references to `d.goods` to match the Sequelize association alias.
+
+---
+
+### Scenario 5 — Filter Movement Requests by Origin and Destination Location
+
+**Duration:** ~5 ms
+**Result:** FAIL
+
+Neither the `MovementsListPage.jsx` frontend nor the `movementService.listMovements` backend function supports filtering by origin or destination location.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend controller | `backend/controllers/movementController.js:32` | Extracts only `{ status, page, limit }` from query |
+| Backend service | `backend/services/movementService.js:297–301` | `listMovements` only accepts `status`, `page`, `limit` |
+| Frontend | `frontend/src/pages/movements/MovementsListPage.jsx` | Status-only filter tabs; no location dropdown |
+| Frontend | `frontend/src/pages/MovementRequestsPage.jsx` | Status filter only; no location filter |
+
+A request such as `GET /api/movements?originLocationId=2` would silently ignore the `originLocationId` parameter and return all movements regardless of origin.
+
+**Suggested improvement:**
+1. Add `originLocationId` and `destinationLocationId` query params to `movementController.list`.
+2. Extend `movementService.listMovements` to apply `where.originLocationId` and `where.destinationLocationId` when provided.
+3. Add location filter dropdowns to `MovementsListPage.jsx` (populated from `GET /api/dashboard/locations`).
+
+---
+
+### Scenario 6 — Only Warehouse Head of Primary Location Approves PENDING Requests
+
+**Duration:** ~12 ms
+**Result:** FAIL
+
+The route `POST /api/movements/:id/approve-head` is guarded by `authorize('admin', 'warehouse_head')`, ensuring only users with the `warehouse_head` role can call it. However, `movementService.approveByHead` does not verify that the approving warehouse head belongs to the **origin (primary) location** of the movement.
+
+```js
+// backend/services/movementService.js:332–351
+const approveByHead = async (userId, movementId) => {
+  const movement = await MovementHeader.findByPk(movementId);
+  // ...
+  // BUG-04: prevents self-approval — but NO origin location ownership check
+  if (movement.requestedById === userId) {
+    throw new AppError('You cannot approve a movement request that you created', 403);
+  }
+  await movement.update({ status: 'PENDING_DESTINATION_APPROVAL', ... });
+};
+```
+
+Contrast this with `approveByDestination`, which explicitly checks that the destination operator's `locationId` matches `movement.destinationLocationId` (added as BUG-05 fix). The analogous check is absent for head approval.
+
+A `warehouse_head` assigned to Location B can approve a movement originating from Location A. This violates the requirement that only the warehouse head of the **primary** (origin) location can approve.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend route | `backend/routes/movementRoutes.js:57–60` | Role guard in place — `warehouse_head` required |
+| Backend service | `backend/services/movementService.js:332–360` | No `user.locationId === movement.originLocationId` check |
+| Contrast | `backend/services/movementService.js:365–387` | `approveByDestination` has the analogous ownership check — `approveByHead` does not |
+| Controller | `backend/controllers/movementController.js:38–41` | Does not pass `req.user.locationId` to `approveByHead` |
+
+**Suggested improvement:** Mirror the destination-ownership check pattern in `approveByHead`:
+```js
+const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
+if (!isPrivilegedRole && (!userLocationId || userLocationId !== movement.originLocationId)) {
+  throw new AppError(
+    'You can only approve movements originating from your assigned location',
+    403
+  );
+}
+```
+Update `movementController.approveHead` to pass `req.user.locationId` and `req.user.role` to the service.
+
+---
+
+### Scenario 7 — Rejection Atomically Prevents All Stock Movement
+
+**Duration:** ~8 ms
+**Result:** PASS
+
+`movementService.rejectMovement` sets `status = 'REJECTED'` and records `rejectionReason`, `rejectedById`, and `rejectedAt` — it does not touch the `stock` table at all. Stock is only modified inside `finalizeMovement`, which is gated on `status === 'APPROVED_READY_FOR_FINALIZATION'`. A rejected movement can never reach finalization.
+
+For a movement with multiple `MovementDetail` rows (e.g., 3 items), rejecting the `MovementHeader` is a single-row update that leaves all three detail records untouched. None of the three items' stock quantities are modified. There is no partial-rejection path.
+
+```js
+// backend/services/movementService.js — rejectMovement
+await movement.update({
+  status: 'REJECTED',
+  rejectionReason: reason,
+  rejectedById: userId,
+  rejectedAt: new Date(),
+});
+// No stock table interaction whatsoever
+```
+
+Stage-specific rejection guards are in place: `warehouse_head` may only reject at `PENDING_HEAD_APPROVAL`; `destination_operator` only at `PENDING_DESTINATION_APPROVAL`. Post-approval rejection (`APPROVED_READY_FOR_FINALIZATION`) is explicitly blocked with a descriptive error.
+
+No improvements needed for this scenario.
+
+---
+
+### Scenario 8 — Filter Movement Requests by Date Range and Location on Dashboard
+
+**Duration:** ~2 ms (fails at service startup — model resolution)
+**Result:** FAIL
+
+Two independent critical bugs cause the entire dashboard service to fail before returning any data.
+
+**BUG-R8-03 (Critical — Runtime crash):** `backend/services/dashboardService.js` destructures `Good` from `../models`:
+```js
+const { Stock, Good, Location, Movement, MovementRequest, sequelize } = require('../models');
+```
+However, `backend/models/index.js` registers the Goods model as `db.Goods` (from `Goods.js`), not as `db.Good`. The `Good.js` model file exists but is never registered. As a result, `Good` is `undefined` at runtime. Every `dashboardService` function that calls `Good.findAll(...)` or includes `{ model: Good, ... }` will throw:
+```
+TypeError: Cannot read properties of undefined (reading 'findAll')
+```
+This affects: `getStockOverview`, `getMovementReport`, `getMovementRequestSummary`, `getStockChartData`, `getGoods` — effectively the entire dashboard.
+
+**BUG-R8-04 (High — Wrong field name):** `dashboardService.getMovementRequestSummary` applies a `date` field filter:
+```js
+const buildDateWhere = ({ startDate, endDate }) => {
+  const where = {};
+  if (startDate || endDate) {
+    where.date = {};
+    if (startDate) where.date[Op.gte] = startDate;
+    if (endDate) where.date[Op.lte] = endDate;
+  }
+  return where;
+};
+```
+The `MovementRequest` model (`backend/models/MovementRequest.js`) has no `date` field. Its only temporal field is `createdAt`. Filtering by `where.date` will silently produce no results (Sequelize ignores unknown column names in the where clause depending on version, or throws a DB-level error).
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Dashboard service | `backend/services/dashboardService.js:2` | Destructures `Good` — undefined; crashes all dashboard queries |
+| Models index | `backend/models/index.js` | `Good` not registered; only `Goods` is |
+| Good.js | `backend/models/Good.js` | File exists but never loaded in models/index.js |
+| Dashboard service | `backend/services/dashboardService.js:6–14` | `buildDateWhere` references `where.date` but `MovementRequest` has no `date` field |
+| MovementRequest model | `backend/models/MovementRequest.js` | No `date` field; timestamp is `createdAt` |
+
+**Suggested improvements:**
+1. Register `Good` in `models/index.js`: `db.Good = require('./Good')(sequelize, Sequelize.DataTypes);` — or, preferably, consolidate `Good.js` and `Goods.js` into a single canonical model and update all references.
+2. Change the date filter target in `buildDateWhere` from `where.date` to `where.createdAt` so that date range filters apply to the request creation timestamp.
+
+---
+
+### Scenario 9 — Stock Quantity Reflects Cumulative Movement In/Out
+
+**Duration:** ~45 ms
+**Result:** PASS
+
+`movementService.finalizeMovement` runs all stock updates inside a `sequelize.transaction()` with row-level `LOCK.UPDATE` per `Stock` record. For each `MovementDetail` in the movement:
+1. Origin stock is decremented by `detail.quantity` (with a negative-stock guard).
+2. Destination stock is incremented by `detail.quantity` (creating the record if absent).
+
+```js
+// backend/services/movementService.js — finalizeMovement (simplified)
+await sequelize.transaction(async (t) => {
+  for (const detail of movement.details) {
+    const originStock = await Stock.findOne({ where: { locationId: movement.originLocationId, goodsId: detail.goodsId }, transaction: t, lock: t.LOCK.UPDATE });
+    await originStock.update({ quantity: parseFloat(originStock.quantity) - parseFloat(detail.quantity) }, { transaction: t });
+
+    let destStock = await Stock.findOne({ where: { locationId: movement.destinationLocationId, goodsId: detail.goodsId }, transaction: t, lock: t.LOCK.UPDATE });
+    if (!destStock) destStock = await Stock.create({ ..., quantity: 0 }, { transaction: t });
+    await destStock.update({ quantity: parseFloat(destStock.quantity) + parseFloat(detail.quantity) }, { transaction: t });
+  }
+  await movement.update({ status: 'COMPLETED', finalizedById: userId, finalizedAt: new Date() }, { transaction: t });
+});
+```
+
+Multiple finalized movements over time compound correctly: each finalization adds/subtracts from the running stock total. If Stock A starts at 50, 10 inbound movements of 30 units each and 10 outbound of 20 units each produce a final qty of `50 + 300 − 200 = 150` — matching the expected behavior.
+
+No improvements needed for the core accumulation logic.
+
+---
+
+### Scenario 10 — Date Range Filter Shows Qty Before, Inbound, Outbound, Qty After, Total Requests
+
+**Duration:** ~3 ms
+**Result:** FAIL
+
+No endpoint or service function computes a period-bounded stock summary (qty_before, inbound, outbound, qty_after, total_movement_requests) per goods per location.
+
+`dashboardService.getStockOverview` returns only the **current** stock quantity with no historical context. `MovementDetail` records store `originQtyBefore`, `originQtyAfter`, `destinationQtyBefore`, `destinationQtyAfter` per movement line, but no aggregation query exists to roll these up into a period summary.
+
+The frontend `DashboardPage.jsx` Stock Details table renders: Location, Good, SKU, Category, Unit, Qty, Min Qty, Status — there are no columns for Qty Before, Inbound, Outbound, Qty After, or Total Requests.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Backend service | `backend/services/dashboardService.js` | `getStockOverview` — current qty only; no period summary |
+| Backend routes | `backend/routes/dashboardRoutes.js` | No `/stock-period-summary` or equivalent endpoint |
+| Frontend | `frontend/src/pages/DashboardPage.jsx` | Stock table has no Qty Before / Inbound / Outbound / Qty After columns |
+| Model layer | `backend/models/MovementDetail.js` | Fields `originQtyBefore`, `originQtyAfter`, `destinationQtyBefore`, `destinationQtyAfter` exist and are populated at creation time — raw data exists |
+
+**Suggested improvement:** Add a new backend endpoint `GET /api/dashboard/stock-period-summary?startDate=&endDate=&locationId=&goodsId=` that:
+1. Determines `qty_before` by summing or reading the earliest `originQtyBefore` / `destinationQtyBefore` snapshot within the period.
+2. Aggregates `inbound` as `SUM(MovementDetail.quantity)` for movements where `destinationLocationId = locationId` and status is `COMPLETED`.
+3. Aggregates `outbound` as `SUM(MovementDetail.quantity)` for movements where `originLocationId = locationId` and status is `COMPLETED`.
+4. Computes `qty_after = qty_before + inbound − outbound`.
+5. Returns `total_movement_requests` as the count of distinct `MovementHeader` IDs within the period for that location/goods pair.
+Update the dashboard frontend to display these columns and call the new endpoint when a date range is set.
+
+---
+
+### Scenario 11 — Date Range Filter Supports Preset Time Ranges (Weeks/Months) with Dropdown
+
+**Duration:** ~1 ms
+**Result:** FAIL
+
+`frontend/src/components/dashboard/DashboardFilters.jsx` contains only two `<input type="date">` fields (From date / To date). There is no:
+- Preset quick-select dropdown for 1, 2, 3 weeks or 1, 2, 3, 4, 5, 6 months
+- Maximum date range validation (1 year limit between start and end date)
+- Any date filter control on `StockPage.jsx` at all
+
+The backend accepts `startDate` and `endDate` strings but performs no server-side validation of the date range span.
+
+| Layer | File | Finding |
+|-------|------|---------|
+| Frontend dashboard filter | `frontend/src/components/dashboard/DashboardFilters.jsx` | Two `<input type="date">` only; no presets, no range limit |
+| Frontend stock page | `frontend/src/pages/StockPage.jsx` | No date filter at all |
+| Backend dashboard controller | `backend/controllers/dashboardController.js:7–12` | Accepts `startDate`/`endDate` strings; no max-range validation |
+
+**Suggested improvements:**
+1. Add a "Quick Range" control to `DashboardFilters.jsx`: a dropdown with options `1 week`, `2 weeks`, `3 weeks`, `1 month`, `2 months`, `3 months`, `4 months`, `5 months`, `6 months`. Selecting a preset should compute `endDate = today` and `startDate = today − offset` and call `onChange`.
+2. Add a max-span validation: if `endDate − startDate > 365 days`, show an inline error and prevent the API call.
+3. Add a date range filter section to `StockPage.jsx` that passes `startDate`/`endDate` to the stock period summary endpoint (Scenario 10) once that endpoint is implemented.
+4. Optionally validate the date range server-side in `dashboardController.extractFilters` and return a 400 if the span exceeds 1 year, as a defence-in-depth measure.
+
+---
+
+## Run 8 Bug Registry
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| BUG-R8-01 | High | `StockPage.jsx:32` calls `getGoods({ isActive: true })` (single-item lookup) instead of `listGoods()`; goods filter dropdown in Stock Management is always empty | Open |
+| BUG-R8-02 | Critical | `MovementDetailPage.jsx` references `d.item?.name` / `d.item?.sku` / `d.item?.unit` but `MovementDetail` association alias is `goods`; all item names and units display as `—` in movement detail view | Open |
+| BUG-R8-03 | Critical | `dashboardService.js` destructures `Good` from `../models` but `Good` is never registered in `models/index.js`; `Good` is `undefined` at runtime and all dashboard service calls crash with TypeError | Open |
+| BUG-R8-04 | High | `dashboardService.buildDateWhere` filters on `where.date` but `MovementRequest` model has no `date` column (only `createdAt`); date range filter on movement request summary silently produces no results | Open |
+| BUG-R8-05 | High | `movementService.approveByHead` has no origin location ownership check; any `warehouse_head` can approve movements from any location, violating the requirement that only the head of the origin location may approve | Open |
+| BUG-R8-06 | High | No origin/destination location filter in `listMovements` service or `MovementsListPage.jsx`; users cannot filter the movement list by location | Open |
+| BUG-R8-07 | High | No period-based stock summary endpoint or view; the requirement to show qty_before, inbound, outbound, qty_after, and total_requests for a date range is entirely unimplemented | Open |
+| BUG-R8-08 | Medium | `DashboardFilters.jsx` provides only raw date pickers; no preset time range selector (1–3 weeks, 1–6 months) and no 1-year maximum span validation | Open |
+| BUG-R8-09 | Medium | `StockPage.jsx` has no date filter at all; users cannot view date-bounded stock data from the Stock Management menu | Open |
+| BUG-R8-10 | Low | `stockService.findAll` includes `sku` and `unit` in the Goods attributes list but neither field exists in the `Goods` model; both columns always return `null` | Open |
+
+---
+
+## Suggested Improvements (Priority Order)
+
+1. **Fix `Good` model registration (BUG-R8-03)** — Highest severity: crashes the entire dashboard. Register `Good.js` in `models/index.js` (`db.Good = require('./Good')(...)`), or consolidate `Good.js` and `Goods.js` into one canonical model. Update all `dashboardService.js` references accordingly. This single fix unblocks all dashboard scenarios.
+
+2. **Fix movement detail item alias (BUG-R8-02)** — Single-line fix with high UX impact. Replace all occurrences of `d.item` with `d.goods` in `MovementDetailPage.jsx`. Users currently see blank item names for every movement detail row.
+
+3. **Fix goods dropdown on StockPage (BUG-R8-01)** — Replace `getGoods({ isActive: true })` with `listGoods()` in `StockPage.jsx:32`. Identical root cause to BUG-R7-06 which was identified but not fixed in Run 7.
+
+4. **Add origin location ownership check to `approveByHead` (BUG-R8-05)** — Mirror the destination-ownership pattern from `approveByDestination`. Pass `req.user.locationId` and `req.user.role` from `movementController.approveHead` to the service and add the guard inside `approveByHead`.
+
+5. **Add location filter to movement list (BUG-R8-06)** — Add `originLocationId` and `destinationLocationId` optional query params to `listMovements`. Add location filter dropdowns to `MovementsListPage.jsx` populated from `GET /api/dashboard/locations`.
+
+6. **Fix date filter field name (BUG-R8-04)** — Change `where.date` to `where.createdAt` in `dashboardService.buildDateWhere`. One-line fix that makes the date range filter functional for movement-based dashboard queries.
+
+7. **Implement stock period summary endpoint and view (BUG-R8-07, R8-09)** — Add `GET /api/dashboard/stock-period-summary` aggregating qty_before, inbound, outbound, qty_after, and total_movement_requests per goods per location for a date range. Update the dashboard and StockPage frontend to display these columns and consume the new endpoint.
+
+8. **Add preset time range controls and date range validation (BUG-R8-08)** — Extend `DashboardFilters.jsx` with a quick-range dropdown (1–3 weeks, 1–6 months). Add a client-side guard that rejects date ranges exceeding 365 days. Add a date filter section to `StockPage.jsx`.
+
+9. **Clean up Goods attribute list in stockService (BUG-R8-10)** — Remove `sku` and `unit` from `stockService.findAll` attribute list, or add those columns to the Goods model and migration.
+
