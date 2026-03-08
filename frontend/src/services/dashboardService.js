@@ -24,6 +24,10 @@ export const getStockChartData = (filters) =>
 export const getMovementTrends = (filters) =>
   api.get('/dashboard/movement-trends', { params: buildParams(filters) }).then((r) => r.data.data);
 
+// BUG-R8-07: stock period summary — qty_before, inbound, outbound, qty_after, total_requests
+export const getStockPeriodSummary = (filters) =>
+  api.get('/dashboard/stock-period-summary', { params: buildParams(filters) }).then((r) => r.data.data);
+
 export const getLocations = () =>
   api.get('/dashboard/locations').then((r) => r.data.data);
 

@@ -1,5 +1,5 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Stock, Goods, Location, Movement, MovementRequest, sequelize } = require('../models');
+const { Stock, Goods, Location, Movement, MovementRequest, MovementHeader, MovementDetail, sequelize } = require('../models');
 
 /**
  * Build a base WHERE clause for date-range filtering on createdAt.
@@ -231,6 +231,130 @@ const getGoods = async () => {
   });
 };
 
+/**
+ * Stock Period Summary — per (goods, location) aggregation for a date range.
+ *
+ * BUG-R8-07 implementation: new endpoint providing qty_before, inbound,
+ * outbound, qty_after, and total_movement_requests per goods per location.
+ *
+ * How values are derived:
+ *   inbound  = SUM of detail.quantity for COMPLETED movements arriving at this
+ *              location for this goods where finalizedAt falls in the period.
+ *   outbound = SUM of detail.quantity for COMPLETED movements departing from
+ *              this location for this goods where finalizedAt falls in the period.
+ *   qty_after  = current stock quantity from the `stock` table.
+ *   qty_before = qty_after − inbound + outbound  (reverse-computed from current
+ *              state so the numbers always reconcile with the live stock table).
+ *   total_movement_requests = count of distinct MovementHeader IDs (any status)
+ *              whose createdAt falls in the period and that involve this
+ *              location (as origin OR destination) for this goods item.
+ *
+ * @param {{ locationId?, goodsId?, startDate?, endDate? }} opts
+ */
+const getStockPeriodSummary = async ({ locationId, goodsId, startDate, endDate } = {}) => {
+  // Helper: build a date-range condition on a given timestamp field.
+  // End date is expanded to 23:59:59 so that same-day queries are inclusive.
+  const dateRange = (field, start, end) => {
+    if (!start && !end) return {};
+    const cond = {};
+    if (start) cond[Op.gte] = new Date(start);
+    if (end) {
+      const e = new Date(end);
+      e.setHours(23, 59, 59, 999);
+      cond[Op.lte] = e;
+    }
+    return { [field]: cond };
+  };
+
+  // Load all stock records within the optional location/goods scope.
+  const stockWhere = {};
+  if (locationId) stockWhere.locationId = locationId;
+  if (goodsId) stockWhere.goodsId = goodsId;
+
+  const stocks = await Stock.findAll({
+    where: stockWhere,
+    include: [
+      { model: Location, as: 'location', attributes: ['id', 'name'], paranoid: false },
+      { model: Goods, as: 'goods', attributes: ['id', 'name', 'productId'], paranoid: false },
+    ],
+  });
+
+  const results = await Promise.all(stocks.map(async (s) => {
+    const completedHeaderWhere = {
+      status: 'COMPLETED',
+      ...dateRange('finalizedAt', startDate, endDate),
+    };
+
+    // Inbound: completed movements arriving at this location for this goods.
+    const inboundRows = await MovementDetail.findAll({
+      where: { goodsId: s.goodsId },
+      attributes: [[fn('SUM', col('MovementDetail.quantity')), 'total']],
+      include: [{
+        model: MovementHeader,
+        as: 'header',
+        where: { ...completedHeaderWhere, destinationLocationId: s.locationId },
+        attributes: [],
+        required: true,
+      }],
+      raw: true,
+    });
+    const inbound = parseFloat(inboundRows[0]?.total) || 0;
+
+    // Outbound: completed movements departing from this location for this goods.
+    const outboundRows = await MovementDetail.findAll({
+      where: { goodsId: s.goodsId },
+      attributes: [[fn('SUM', col('MovementDetail.quantity')), 'total']],
+      include: [{
+        model: MovementHeader,
+        as: 'header',
+        where: { ...completedHeaderWhere, originLocationId: s.locationId },
+        attributes: [],
+        required: true,
+      }],
+      raw: true,
+    });
+    const outbound = parseFloat(outboundRows[0]?.total) || 0;
+
+    // Total movement requests (any status) involving this location/goods pair.
+    const requestRows = await MovementDetail.findAll({
+      where: { goodsId: s.goodsId },
+      attributes: ['movementHeaderId'],
+      include: [{
+        model: MovementHeader,
+        as: 'header',
+        where: {
+          ...dateRange('createdAt', startDate, endDate),
+          [Op.or]: [
+            { originLocationId: s.locationId },
+            { destinationLocationId: s.locationId },
+          ],
+        },
+        attributes: [],
+        required: true,
+      }],
+      raw: true,
+    });
+    const totalMovementRequests = new Set(requestRows.map((r) => r.movementHeaderId)).size;
+
+    const qtyAfter = parseFloat(s.quantity);
+    // Qty before = reverse-compute from the current stock level.
+    // Max with 0 to avoid negative values when movements predating the period exist.
+    const qtyBefore = Math.max(0, qtyAfter - inbound + outbound);
+
+    return {
+      location: s.location,
+      goods: s.goods,
+      qtyBefore,
+      inbound,
+      outbound,
+      qtyAfter,
+      totalMovementRequests,
+    };
+  }));
+
+  return results;
+};
+
 module.exports = {
   getStockOverview,
   getMovementReport,
@@ -239,4 +363,5 @@ module.exports = {
   getMovementTrends,
   getLocations,
   getGoods,
+  getStockPeriodSummary,
 };

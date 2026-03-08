@@ -165,6 +165,14 @@ Supports multiple goods per movement via line items.
 Rejection at any step sets status to `REJECTED` and records `rejectedById`,
 `rejectedAt`, and `rejectionReason` on the header.
 
+### Approval Ownership Rules
+
+| Step | Role required | Location constraint |
+|------|---------------|---------------------|
+| Head approval | `warehouse_head` | Must belong to the **origin** location (`user.locationId === header.originLocationId`). `admin` and `manager` are exempt. |
+| Destination approval | `destination_operator` | Must belong to the **destination** location (`user.locationId === header.destinationLocationId`). `admin` and `manager` are exempt. |
+| Finalization | `warehouse_operator` | Must be the **requester** of the movement. `admin` and `manager` may finalize any movement. |
+
 ---
 
 ## DUPLICATE MOVEMENT RULE
@@ -216,9 +224,34 @@ with boolean flags: `can_view`, `can_create`, `can_edit`, `can_delete`,
 
 ## DASHBOARD FEATURES
 
-- Stock overview per location
+- Stock overview per location (current quantities)
+- **Stock period summary** — per `(goods, location)` aggregation for a chosen
+  date range, showing `qty_before`, `inbound`, `outbound`, `qty_after`, and
+  `total_movement_requests`.
+  Endpoint: `GET /api/dashboard/stock-period-summary?startDate=&endDate=&locationId=&goodId=`
+- Quick-range date filter presets (1–3 weeks, 1–6 months) in `DashboardFilters.jsx`
+- 365-day maximum date-range validation (client-side) on Dashboard and Stock pages
 - Movement request status counts
 - Recent movement activity
+- Movement list filterable by origin and destination location
+  (`GET /api/movements?originLocationId=&destinationLocationId=`)
+
+### Stock Period Summary Algorithm
+
+For each `(goods_id, location_id)` pair tracked in the `stock` table:
+
+1. **inbound** — `SUM(detail.quantity)` for `COMPLETED` movements where
+   `header.destination_location_id = location_id` and `header.finalized_at`
+   falls inside the requested period.
+2. **outbound** — `SUM(detail.quantity)` for `COMPLETED` movements where
+   `header.origin_location_id = location_id` and `header.finalized_at`
+   falls inside the requested period.
+3. **qty_after** — current `Stock.quantity` (live value from the `stock` table).
+4. **qty_before** — `max(0, qty_after − inbound + outbound)` — reverse-computed
+   from the live stock so the figure always reconciles with current reality.
+5. **total_movement_requests** — count of distinct `MovementHeader` IDs (any
+   status) whose `createdAt` falls inside the period and that involve this
+   location (as origin **or** destination) for this goods item.
 
 ---
 
