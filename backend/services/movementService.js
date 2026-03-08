@@ -43,7 +43,7 @@ const withFullIncludes = () => [
 ];
 
 // ---------------------------------------------------------------------------
-// Duplicate check
+// Duplicate / in-flight checks
 // ---------------------------------------------------------------------------
 
 /**
@@ -91,6 +91,33 @@ const findDuplicateActiveMovement = async (originLocationId, destinationLocation
     if (isMatch) return movement;
   }
   return null;
+};
+
+/**
+ * BUG-R9-06 fix: goods-scoped in-flight lock.
+ *
+ * Returns the first active movement that contains ANY of the supplied goodsIds,
+ * regardless of origin or destination location. This prevents a second movement
+ * from being created for goods that are already logically committed to an
+ * in-progress movement — even when the route differs.
+ *
+ * The stock-adjustment service already applies the same goods-only check;
+ * this helper brings movement creation into parity.
+ *
+ * Must be called inside a transaction so the SELECT is atomic with the INSERT.
+ */
+const findActiveMovementForGoods = async (goodsIds, transaction = null) => {
+  const findOpts = {
+    where: { status: { [Op.in]: ACTIVE_STATUSES } },
+    include: [{
+      model: MovementDetail,
+      as: 'details',
+      where: { goodsId: { [Op.in]: goodsIds } },
+      required: true,
+    }],
+  };
+  if (transaction) findOpts.transaction = transaction;
+  return MovementHeader.findOne(findOpts);
 };
 
 // ---------------------------------------------------------------------------
@@ -219,12 +246,24 @@ const createMovement = async (requestedById, data) => {
   }
 
   const movement = await sequelize.transaction(async (t) => {
-    // BUG-03 fix: duplicate check runs inside the transaction so the SELECT
-    // and INSERT are atomic — concurrent identical requests cannot both pass.
+    // BUG-03 fix: route-scoped duplicate check — same origin, destination, and
+    // goods set. Runs inside the transaction for atomicity.
     const duplicate = await findDuplicateActiveMovement(originLocationId, destinationLocationId, items, t);
     if (duplicate) {
       throw new AppError(
         `A duplicate active movement request already exists (${duplicate.movementNumber})`,
+        409
+      );
+    }
+
+    // BUG-R9-06 fix: goods-scoped in-flight lock — if any of the requested
+    // goods already appear in an active movement (any route), block the new
+    // request. Prevents stock committed to one movement from being moved again.
+    const requestedGoodsIds = detailData.map((d) => d.goodsId);
+    const inFlight = await findActiveMovementForGoods(requestedGoodsIds, t);
+    if (inFlight) {
+      throw new AppError(
+        `One or more requested goods are already part of an active movement (${inFlight.movementNumber})`,
         409
       );
     }
@@ -386,16 +425,19 @@ const approveByDestination = async (userId, movementId, userLocationId, userRole
   // BUG-R3-02: admin and manager do not have a locationId assigned, so the
   // ownership check always failed for them — making their route permission
   // effectively dead. Privileged roles are explicitly exempted from the
-  // location-ownership requirement; all other roles (destination_operator)
-  // must still belong to the destination location.
+  // location-ownership requirement.
   //
-  // BUG-05: Destination location ownership check — the approver must belong to
-  // the destination location. A null/missing locationId must NOT bypass this
-  // guard for non-privileged users; it is treated as a mismatch (fail-closed).
+  // BUG-R9-01 fix: destination approval authority is now derived from location
+  // ownership (userLocationId === destinationLocationId) rather than from a
+  // distinct role name. Both warehouse_operator and destination_operator at the
+  // destination warehouse may approve — the route gate enforces the role list.
+  //
+  // BUG-05: fail-closed — a null/missing locationId is treated as a mismatch
+  // for non-privileged users; they cannot bypass the ownership check.
   const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
   if (!isPrivilegedRole && (!userLocationId || userLocationId !== movement.destinationLocationId)) {
     throw new AppError(
-      'You can only approve movements where you are the destination location operator',
+      'You can only approve movements destined for your location',
       403
     );
   }
@@ -420,7 +462,7 @@ const approveByDestination = async (userId, movementId, userLocationId, userRole
   return getMovement(movementId);
 };
 
-const finalizeMovement = async (userId, movementId, userRole) => {
+const finalizeMovement = async (userId, movementId, userRole, userLocationId) => {
   const movement = await MovementHeader.findByPk(movementId, {
     include: [{ model: MovementDetail, as: 'details' }],
   });
@@ -429,12 +471,18 @@ const finalizeMovement = async (userId, movementId, userRole) => {
     throw new AppError(`Cannot finalize: movement is currently "${movement.status}"`, 400);
   }
 
-  // BUG-R3-03: Without an ownership check, any warehouse_operator could finalize
-  // any approved movement — not just their own. Restrict warehouse_operator to
-  // movements they originally created. admin and manager may finalize any movement.
+  // BUG-R9-02 fix: finalization authority is now assigned to the destination
+  // warehouse operator — the party physically receiving the goods — rather than
+  // the originating operator who created the request.
+  //
+  // This aligns the code with the business intent: the receiver confirms and
+  // closes the movement. The ownership check is locationId-based (same pattern
+  // as approveByHead / approveByDestination) rather than requestedById-based.
+  //
+  // admin and manager are exempt and may finalize any movement.
   const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
-  if (!isPrivilegedRole && movement.requestedById !== userId) {
-    throw new AppError('You can only finalize movements that you created', 403);
+  if (!isPrivilegedRole && (!userLocationId || userLocationId !== movement.destinationLocationId)) {
+    throw new AppError('You can only finalize movements destined for your location', 403);
   }
 
   const before = { status: movement.status };
@@ -494,40 +542,52 @@ const finalizeMovement = async (userId, movementId, userRole) => {
   return getMovement(movementId);
 };
 
-const rejectMovement = async (userId, movementId, reason, userRole) => {
+const rejectMovement = async (userId, movementId, reason, userRole, userLocationId) => {
   const movement = await MovementHeader.findByPk(movementId);
   if (!movement) throw new AppError('Movement not found', 404);
   if (['COMPLETED', 'REJECTED'].includes(movement.status)) {
     throw new AppError(`Cannot reject: movement is already "${movement.status}"`, 400);
   }
 
-  // BUG-09: Stage-specific rejection guard.
-  // Rejection is only valid at specific workflow stages for specific roles:
-  //   warehouse_head       — may reject at PENDING_HEAD_APPROVAL only
-  //   destination_operator — may reject at PENDING_DESTINATION_APPROVAL only
-  //   admin / manager      — may reject at either of the above two stages
-  // Post-destination-approval (APPROVED_READY_FOR_FINALIZATION) rejection is
-  // not permitted through this route — the movement has already been fully
-  // approved and awaits physical execution.
+  // Post-destination-approval rejection is handled by the dedicated recall
+  // endpoint. The reject route only covers pre-finalization stages.
   if (movement.status === 'APPROVED_READY_FOR_FINALIZATION') {
     throw new AppError(
-      'Cannot reject: movement has already been approved for finalization. Cancel it instead.',
+      'Cannot reject: movement has already been approved for finalization. Use the recall endpoint instead.',
       400
     );
   }
 
-  if (userRole === 'warehouse_head' && movement.status !== 'PENDING_HEAD_APPROVAL') {
-    throw new AppError(
-      'Warehouse head can only reject movements pending head approval',
-      403
-    );
-  }
+  const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
 
-  if (userRole === 'destination_operator' && movement.status !== 'PENDING_DESTINATION_APPROVAL') {
-    throw new AppError(
-      'Destination operator can only reject movements pending destination approval',
-      403
-    );
+  if (!isPrivilegedRole) {
+    if (userRole === 'warehouse_head') {
+      // BUG-09 / BUG-R9-01: warehouse_head at the origin warehouse may reject
+      // only at PENDING_HEAD_APPROVAL. Add location-ownership check so that any
+      // warehouse_head can only reject movements for their own location.
+      if (movement.status !== 'PENDING_HEAD_APPROVAL') {
+        throw new AppError('Warehouse head can only reject movements pending head approval', 403);
+      }
+      if (!userLocationId || userLocationId !== movement.originLocationId) {
+        throw new AppError(
+          'You can only reject movements where you are the origin location warehouse head',
+          403
+        );
+      }
+    } else if (userRole === 'destination_operator' || userRole === 'warehouse_operator') {
+      // BUG-R9-03 fix: destination-side actors (destination_operator or
+      // warehouse_operator assigned to the destination location) may reject at
+      // PENDING_HEAD_APPROVAL (early/pre-head-approval rejection) or
+      // PENDING_DESTINATION_APPROVAL. Location ownership is mandatory —
+      // only the operator whose locationId matches the destination may act.
+      if (!userLocationId || userLocationId !== movement.destinationLocationId) {
+        throw new AppError('You can only reject movements destined for your location', 403);
+      }
+      const allowedStages = ['PENDING_HEAD_APPROVAL', 'PENDING_DESTINATION_APPROVAL'];
+      if (!allowedStages.includes(movement.status)) {
+        throw new AppError('Destination operator can only reject movements pending approval', 403);
+      }
+    }
   }
 
   const before = { status: movement.status };
@@ -596,6 +656,70 @@ const cancelMovement = async (userId, movementId) => {
   return getMovement(movementId);
 };
 
+/**
+ * BUG-R9-04 / BUG-R9-05 fix: recall a fully-approved movement.
+ *
+ * The existing reject endpoint unconditionally blocks rejection at
+ * APPROVED_READY_FOR_FINALIZATION. This function provides a dedicated
+ * "recall" transition for that stage, accessible to:
+ *   - origin warehouse_head  (locationId === originLocationId)
+ *   - destination warehouse_head (locationId === destinationLocationId)
+ *   - destination warehouse_operator / destination_operator
+ *   - admin / manager (no location restriction)
+ *
+ * Status transitions to REJECTED with the supplied reason and a RECALL audit
+ * action for traceability.
+ */
+const recallMovement = async (userId, movementId, reason, userRole, userLocationId) => {
+  const movement = await MovementHeader.findByPk(movementId);
+  if (!movement) throw new AppError('Movement not found', 404);
+
+  if (movement.status !== 'APPROVED_READY_FOR_FINALIZATION') {
+    throw new AppError(
+      `Cannot recall: movement is currently "${movement.status}". Recall is only valid for movements at APPROVED_READY_FOR_FINALIZATION.`,
+      400
+    );
+  }
+
+  const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
+
+  if (!isPrivilegedRole) {
+    // Origin warehouse_head may recall (they gave first approval)
+    const isOriginHead = userRole === 'warehouse_head' && userLocationId === movement.originLocationId;
+    // Destination actors (warehouse_head, warehouse_operator, destination_operator) may recall
+    const isDestinationActor =
+      userLocationId === movement.destinationLocationId &&
+      ['warehouse_head', 'warehouse_operator', 'destination_operator'].includes(userRole);
+
+    if (!isOriginHead && !isDestinationActor) {
+      throw new AppError(
+        'You are not authorised to recall this movement. Only the origin/destination warehouse head or destination operator may do so.',
+        403
+      );
+    }
+  }
+
+  const before = { status: movement.status };
+
+  await movement.update({
+    status: 'REJECTED',
+    rejectionReason: reason,
+    rejectedById: userId,
+    rejectedAt: new Date(),
+  });
+
+  await createAuditLog({
+    userId,
+    action: 'RECALL',
+    entity: 'MovementHeader',
+    entityId: movement.id,
+    before,
+    after: { status: 'REJECTED', rejectionReason: reason },
+  });
+
+  return getMovement(movementId);
+};
+
 module.exports = {
   previewMovement,
   createMovement,
@@ -606,4 +730,5 @@ module.exports = {
   finalizeMovement,
   rejectMovement,
   cancelMovement,
+  recallMovement,
 };

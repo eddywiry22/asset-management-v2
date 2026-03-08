@@ -72,30 +72,48 @@ router.post(
   movementController.approveHead
 );
 
-// POST /api/movements/:id/approve-dest – destination operator approves second stage
+// POST /api/movements/:id/approve-dest – destination-side actor approves second stage
+// BUG-R9-01 fix: warehouse_operator at the destination location is now also
+// permitted. Authority is derived from locationId ownership in the service layer,
+// not from a distinct role name.
 router.post(
   '/:id/approve-dest',
-  authorize('admin', 'destination_operator'),
+  authorize('admin', 'destination_operator', 'warehouse_operator'),
   movementController.approveDest
 );
 
 // POST /api/movements/:id/finalize – finalize and update stock
-// BUG-07: warehouse_head removed — they perform step 2 (head approval) only.
-// Allowing them to also finalize (step 4) collapses the 4-step workflow to 2
-// steps and defeats the purpose of the destination-approval stage.
-// Only warehouse_operator (the originating party) or admin may finalize.
+// BUG-R9-02 fix: authority is now destination-location-based. Both the
+// destination warehouse_operator and the destination warehouse_head may
+// finalize — the service enforces the locationId ownership check.
+// warehouse_head removed from the original head-approval–only role to match
+// the updated workflow where any destination-assigned actor can close the movement.
 router.post(
   '/:id/finalize',
-  authorize('admin', 'warehouse_operator'),
+  authorize('admin', 'warehouse_operator', 'warehouse_head'),
   movementController.finalize
 );
 
-// POST /api/movements/:id/reject – reject with mandatory reason
+// POST /api/movements/:id/reject – reject with mandatory reason (pre-finalization stages only)
+// BUG-R9-01 / BUG-R9-03 fix: warehouse_operator at the destination location may
+// now reject at PENDING_HEAD_APPROVAL or PENDING_DESTINATION_APPROVAL.
+// Location ownership and stage guards are enforced in the service layer.
 router.post(
   '/:id/reject',
-  authorize('admin', 'warehouse_head', 'destination_operator'),
+  authorize('admin', 'warehouse_head', 'destination_operator', 'warehouse_operator'),
   validate(rejectSchema),
   movementController.reject
+);
+
+// POST /api/movements/:id/recall – post-approval recall for APPROVED_READY_FOR_FINALIZATION
+// BUG-R9-04 / BUG-R9-05 fix: provides a recall transition for fully-approved
+// movements that cannot be rejected through the standard reject endpoint.
+// Accessible to origin/destination warehouse_head, destination operators, admin.
+router.post(
+  '/:id/recall',
+  authorize('admin', 'manager', 'warehouse_head', 'warehouse_operator', 'destination_operator'),
+  validate(rejectSchema),
+  movementController.recall
 );
 
 // POST /api/movements/:id/cancel – warehouse_operator withdraws their own pending request

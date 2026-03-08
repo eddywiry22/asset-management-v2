@@ -74,9 +74,14 @@ const approveDest = async (req, res, next) => {
 
 const finalize = async (req, res, next) => {
   try {
-    // BUG-R3-03: pass role so the service can enforce requester-only finalization
-    // for warehouse_operator while allowing admin/manager to finalize any movement.
-    const movement = await movementService.finalizeMovement(req.user.id, req.params.id, req.user.role);
+    // BUG-R9-02 fix: pass locationId so the service can enforce destination
+    // location ownership (the receiver, not the creator, finalizes the movement).
+    const movement = await movementService.finalizeMovement(
+      req.user.id,
+      req.params.id,
+      req.user.role,
+      req.user.locationId
+    );
     return success(res, movement, 'Movement finalized and stock updated');
   } catch (err) {
     return next(err);
@@ -85,15 +90,32 @@ const finalize = async (req, res, next) => {
 
 const reject = async (req, res, next) => {
   try {
-    // BUG-09: pass the caller's role so the service can enforce stage-specific
-    // rejection guards (e.g. only at PENDING_HEAD_APPROVAL / PENDING_DESTINATION_APPROVAL).
+    // BUG-R9-01 / BUG-R9-03: pass locationId so the service can enforce
+    // location-ownership guards for role-based stage restrictions.
     const movement = await movementService.rejectMovement(
       req.user.id,
       req.params.id,
       req.body.reason,
-      req.user.role
+      req.user.role,
+      req.user.locationId
     );
     return success(res, movement, 'Movement rejected');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+// BUG-R9-04 / BUG-R9-05: recall — post-approval reversal for APPROVED_READY_FOR_FINALIZATION
+const recall = async (req, res, next) => {
+  try {
+    const movement = await movementService.recallMovement(
+      req.user.id,
+      req.params.id,
+      req.body.reason,
+      req.user.role,
+      req.user.locationId
+    );
+    return success(res, movement, 'Movement recalled');
   } catch (err) {
     return next(err);
   }
@@ -109,4 +131,4 @@ const cancel = async (req, res, next) => {
   }
 };
 
-module.exports = { preview, create, list, getOne, approveHead, approveDest, finalize, reject, cancel };
+module.exports = { preview, create, list, getOne, approveHead, approveDest, finalize, reject, cancel, recall };
