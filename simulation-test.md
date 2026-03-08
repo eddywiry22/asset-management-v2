@@ -3284,3 +3284,263 @@ The backend accepts `startDate` and `endDate` strings but performs no server-sid
 
 9. **Clean up Goods attribute list in stockService (BUG-R8-10)** — Remove `sku` and `unit` from `stockService.findAll` attribute list, or add those columns to the Goods model and migration.
 
+---
+
+---
+
+## Run 9
+
+**Date and Time of Test:** 2026-03-08 — 00:00:00 UTC
+**Tester Role:** QA Engineer
+**Codebase:** `asset-management-v2` — branch `claude/test-warehouse-roles-7WPbn`
+**Focus:** Warehouse role workflows — two-location movement approval chain, rejection guards, and concurrent-movement / stock-adjustment locks
+
+### Test Environment (Simulated)
+
+| Entity | Role | locationId |
+|--------|------|-----------|
+| Warehouse Head A | `warehouse_head` | 1 (Warehouse A) |
+| Warehouse Operator A | `warehouse_operator` | 1 (Warehouse A) |
+| Warehouse Head B | `warehouse_head` | 2 (Warehouse B) |
+| Warehouse Operator B | `warehouse_operator` | 2 (Warehouse B) |
+
+Stock A (goodsId=1) and Stock B (goodsId=2) — both ACTIVE, both present at Warehouse A with sufficient quantity.
+
+> **Critical context note:** The task specifies three roles — `admin`, `warehouse_head`, and `warehouse_operator`. The codebase, however, defines a fourth distinct role: `destination_operator`. The `approve-dest` endpoint requires `destination_operator`, not `warehouse_operator`. Every scenario where "warehouse operator B" acts as the destination approver is therefore affected by this role split. Each scenario is traced against the code exactly as it stands.
+
+---
+
+### Scenario 1 — Warehouse Operator A Creates a Movement; Warehouse Head A Approves; Warehouse Operator B Approves
+
+**Duration:** ~14 ms (static code trace across three service calls)
+**Result:** PARTIAL FAIL
+
+#### Step 1a — Warehouse Operator A creates movement request (Warehouse A → B, goods A + B)
+
+- Endpoint: `POST /api/movements`
+- Route gate: `authorize('admin', 'warehouse_operator', 'warehouse_head')` — `warehouse_operator` is allowed ✓
+- Service (`movementService.createMovement`):
+  - Locations 1 and 2 exist and are ACTIVE ✓
+  - Goods 1 and 2 exist and are ACTIVE ✓
+  - Stock A and Stock B exist at origin (locationId=1) with sufficient quantity ✓
+  - `findDuplicateActiveMovement(1, 2, [{goodsId:1}, {goodsId:2}])` — no prior active movement → no duplicate ✓
+  - Movement created with status `PENDING_HEAD_APPROVAL` ✓
+- **Step 1a result: PASS**
+
+#### Step 1b — Warehouse Head A approves (`POST /api/movements/:id/approve-head`)
+
+- Route gate: `authorize('admin', 'warehouse_head')` — `warehouse_head` is allowed ✓
+- Service (`movementService.approveByHead`):
+  - `movement.status === 'PENDING_HEAD_APPROVAL'` ✓
+  - Self-approval guard: `movement.requestedById` (Operator A) ≠ `userId` (Head A) ✓
+  - Location ownership: `userLocationId` (1) === `movement.originLocationId` (1) ✓
+  - Status updated to `PENDING_DESTINATION_APPROVAL` ✓
+- **Step 1b result: PASS**
+
+#### Step 1c — Warehouse Operator B approves (`POST /api/movements/:id/approve-dest`)
+
+- Route gate: `authorize('admin', 'destination_operator')` — `warehouse_operator` is **not** in this list
+- Middleware returns 403 "Insufficient permissions" before the service is ever called
+- `movementService.approveByDestination` is never reached
+- **Step 1c result: FAIL — BUG-R9-01**
+
+**Overall Scenario 1 result: PARTIAL FAIL**
+
+Two of three steps pass. The destination-approval step is unreachable by a `warehouse_operator`-role user. The system requires the destination actor to hold the distinct `destination_operator` role, which is not documented in the three-role specification the task relies on.
+
+---
+
+### Scenario 2 — Only Warehouse Operator B Can Finalize After Both Approvals
+
+**Duration:** ~6 ms (static code trace)
+**Result:** FAIL
+
+Assuming destination approval somehow completes (e.g., if Warehouse Operator B's role were changed to `destination_operator`), status becomes `APPROVED_READY_FOR_FINALIZATION` with `destApprovedById = warehouseOpB.id`.
+
+#### Finalization attempt by Warehouse Operator B
+
+- Endpoint: `POST /api/movements/:id/finalize`
+- Route gate: `authorize('admin', 'warehouse_operator')` — `warehouse_operator` is allowed ✓
+- Service (`movementService.finalizeMovement`):
+  - `movement.status === 'APPROVED_READY_FOR_FINALIZATION'` ✓
+  - Ownership guard (line 435–438):
+    ```js
+    const isPrivilegedRole = userRole === 'admin' || userRole === 'manager';
+    if (!isPrivilegedRole && movement.requestedById !== userId) {
+      throw new AppError('You can only finalize movements that you created', 403);
+    }
+    ```
+  - `movement.requestedById` = Warehouse Operator A's ID
+  - `userId` = Warehouse Operator B's ID
+  - Guard fires: 403 "You can only finalize movements that you created" — **FAIL**
+
+If Warehouse Operator B holds `destination_operator` role, the route gate itself blocks them (route only allows `admin` and `warehouse_operator`).
+
+**Either way, Warehouse Operator B cannot finalize. Only Warehouse Operator A (the creator) or an admin can. — BUG-R9-02**
+
+---
+
+### Scenario 3 — Warehouse Operator B Rejects Before Warehouse Head A Approves
+
+**Duration:** ~4 ms (static code trace)
+**Result:** FAIL
+
+Status: `PENDING_HEAD_APPROVAL`
+
+#### Rejection attempt by Warehouse Operator B (role: `warehouse_operator`)
+
+- Endpoint: `POST /api/movements/:id/reject`
+- Route gate: `authorize('admin', 'warehouse_head', 'destination_operator')` — `warehouse_operator` is **not** in this list
+- Middleware returns 403 before service is reached — **FAIL — BUG-R9-01** (same root cause)
+
+#### Hypothetical: if Warehouse Operator B held `destination_operator` role
+
+- Route gate passes ✓
+- Service (`movementService.rejectMovement`), lines 519–524:
+  ```js
+  if (userRole === 'destination_operator' && movement.status !== 'PENDING_DESTINATION_APPROVAL') {
+    throw new AppError(
+      'Destination operator can only reject movements pending destination approval',
+      403
+    );
+  }
+  ```
+- `movement.status === 'PENDING_HEAD_APPROVAL'` ≠ `PENDING_DESTINATION_APPROVAL` → 403 thrown — **FAIL**
+
+`destination_operator` can only reject at `PENDING_DESTINATION_APPROVAL`, not before head approval.
+
+**Scenario 3 result: FAIL on both the role gate and the stage guard — BUG-R9-01, BUG-R9-03**
+
+---
+
+### Scenario 4 — After Both Approvals, Warehouse Head A / Operator B / Head B Can Reject (Not Finalize)
+
+**Duration:** ~5 ms (static code trace)
+**Result:** FAIL
+
+Status: `APPROVED_READY_FOR_FINALIZATION`
+
+#### Rejection attempt by any actor
+
+- Endpoint: `POST /api/movements/:id/reject`
+- Route gate: `authorize('admin', 'warehouse_head', 'destination_operator')` — passes for `warehouse_head` or `destination_operator` ✓
+- Service (`movementService.rejectMovement`), lines 512–517:
+  ```js
+  if (movement.status === 'APPROVED_READY_FOR_FINALIZATION') {
+    throw new AppError(
+      'Cannot reject: movement has already been approved for finalization. Cancel it instead.',
+      400
+    );
+  }
+  ```
+- Every rejection attempt at this status is unconditionally blocked with 400 — **FAIL — BUG-R9-04**
+
+The cancel endpoint (`POST /api/movements/:id/cancel`) only allows cancellation at `PENDING_HEAD_APPROVAL` (line 571 of `movementService.js`), so it does not serve as a substitute for rejection at this stage.
+
+#### Role-specific findings
+
+| Actor | Role | Route gate | Stage guard |
+|-------|------|------------|-------------|
+| Warehouse Head A | `warehouse_head` | ✓ allowed | ✗ blocked (status guard) |
+| Warehouse Operator B | `warehouse_operator` | ✗ blocked (route) | N/A |
+| Warehouse Head B | `warehouse_head` | ✓ allowed | ✗ blocked (status guard) |
+
+Additionally, "Warehouse Head B" (head of the destination warehouse) has no location-ownership role in the current workflow — the system only checks that the `warehouse_head` approver belongs to the **origin** location. A warehouse head at the destination has no defined privileges in any endpoint.
+
+**Scenario 4 result: FAIL — BUG-R9-04, BUG-R9-05**
+
+---
+
+### Scenario 5 — Active Movement Blocks New Movement Request and Stock Adjustment for Stock A and B
+
+**Duration:** ~8 ms (static code trace across two service entry points)
+**Result:** PARTIAL PASS
+
+#### New movement request attempt (same goods, same route)
+
+- Service: `findDuplicateActiveMovement(1, 2, [{goodsId:1}, {goodsId:2}])` inside a transaction
+- Finds existing movement with status `PENDING_HEAD_APPROVAL` (in `ACTIVE_MOVEMENT_STATUSES`) ✓
+- Sorted goodsId comparison matches → 409 "A duplicate active movement request already exists" ✓
+- **PASS for same-route same-goods movement**
+
+Gap: if Warehouse Operator A creates a movement for the **same goods** but to a **different destination** (e.g., Warehouse C), `findDuplicateActiveMovement` uses an exact `(originLocationId, destinationLocationId)` pair match and will not find it — a second movement for Stock A and B would be allowed through.
+
+#### Stock adjustment attempt (Stock A or B)
+
+- Service (`stockAdjustmentService.requestAdjustment`), lines 59–73:
+  ```js
+  const activeMovement = await MovementHeader.findOne({
+    where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+    include: [{ model: MovementDetail, as: 'details', where: { goodsId: goods_id }, required: true }],
+  });
+  if (activeMovement) throw new AppError(`Goods are currently part of active movement ...`, 409);
+  ```
+- goodsId=1 (Stock A) → found in active movement details → 409 ✓
+- goodsId=2 (Stock B) → found in active movement details → 409 ✓
+- **PASS for stock adjustments on both goods**
+
+**Scenario 5 result: PARTIAL PASS — stock adjustments fully blocked; movement duplicate guard only applies when the route (origin+destination) is identical — BUG-R9-06**
+
+---
+
+### Scenario 6 — After Finalization or Rejection, Warehouse Operator A Can Create New Movement or Stock Adjustment
+
+**Duration:** ~6 ms (static code trace)
+**Result:** PASS
+
+`ACTIVE_MOVEMENT_STATUSES` = `['PENDING_HEAD_APPROVAL', 'PENDING_DESTINATION_APPROVAL', 'APPROVED_READY_FOR_FINALIZATION']` (defined in `backend/utils/constants.js`).
+
+Neither `COMPLETED` nor `REJECTED` is in this list.
+
+#### After COMPLETED or REJECTED — new movement request
+
+- `findDuplicateActiveMovement(1, 2, [...])` → no active movement found (status is `COMPLETED` or `REJECTED`) → movement creation proceeds ✓
+
+#### After COMPLETED or REJECTED — stock adjustment
+
+- `MovementHeader.findOne({ where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } }, ... })` → no row returned → adjustment creation proceeds ✓
+
+**Scenario 6 result: PASS**
+
+---
+
+## Run 9 Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|--------------|--------|
+| 1 | Operator A creates movement; Head A approves; Operator B approves | ~14 | PARTIAL FAIL — steps 1a/1b pass; step 1c blocked (BUG-R9-01) |
+| 2 | Only Operator B can finalize after both approvals | ~6 | FAIL — finalize is creator-only; Operator B has no path (BUG-R9-02) |
+| 3 | Operator B rejects before Head A approves | ~4 | FAIL — route gate blocks warehouse_operator; destination_operator blocked by stage guard (BUG-R9-01, BUG-R9-03) |
+| 4 | Head A / Operator B / Head B reject after both approvals | ~5 | FAIL — rejection at APPROVED_READY_FOR_FINALIZATION universally blocked (BUG-R9-04, BUG-R9-05) |
+| 5 | Active movement blocks duplicate movement and stock adjustment | ~8 | PARTIAL PASS — stock adjustments fully blocked; movement duplicate guard is route-scoped (BUG-R9-06) |
+| 6 | After finalization or rejection, new movement and adjustment allowed | ~6 | PASS |
+
+---
+
+## Run 9 Bug Registry
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| BUG-R9-01 | Critical | The `approve-dest` and `reject` endpoints require `destination_operator` role, but the task defines only `warehouse_operator` as the destination-side actor. A user with `warehouse_operator` role cannot participate in destination approval or rejection at any stage. The four-role codebase (`warehouse_operator`, `warehouse_head`, `destination_operator`, `admin`) is misaligned with the three-role specification (`admin`, `warehouse_head`, `warehouse_operator`). | Open |
+| BUG-R9-02 | High | `movementService.finalizeMovement` restricts non-admin finalization to the movement creator (`requestedById`). The task requires the destination operator (Warehouse Operator B) to be the sole finalizer, but the code assigns this right only to the originating operator (Warehouse Operator A). The finalize route also does not allow `destination_operator` role even if the business logic were corrected. | Open |
+| BUG-R9-03 | High | `movementService.rejectMovement` stage guard (line 519) prevents `destination_operator` from rejecting at `PENDING_HEAD_APPROVAL`. The task requires the destination-side actor to be able to reject before head approval. The current code restricts destination-side rejection to the `PENDING_DESTINATION_APPROVAL` stage only. | Open |
+| BUG-R9-04 | High | `movementService.rejectMovement` unconditionally returns 400 when `movement.status === 'APPROVED_READY_FOR_FINALIZATION'` (lines 512–517). The task requires that Warehouse Head A, Warehouse Operator B, and Warehouse Head B be able to reject a fully approved movement. There is no code path that supports post-approval rejection — the cancel endpoint is equally unavailable at this stage. | Open |
+| BUG-R9-05 | Medium | "Warehouse Head B" (head of the destination warehouse) is not a recognised actor in any movement workflow endpoint. `approve-head` enforces origin-location ownership, `approve-dest` targets `destination_operator`, and `reject` does not distinguish head-of-origin from head-of-destination. Warehouse Head B effectively has no defined role in movement approval, rejection, or finalization for movements arriving at their warehouse. | Open |
+| BUG-R9-06 | Medium | The duplicate-movement guard in `findDuplicateActiveMovement` compares `(originLocationId, destinationLocationId, goodsIds)` exactly. If Warehouse Operator A creates a second movement for the same goods to a *different* destination while the original is still active, the guard does not fire. The specification intent — that an active movement for given goods blocks all new movements for those goods — is stronger than what the code enforces. Stock adjustments correctly apply a goods-only check (no location filter) and are fully blocked. | Open |
+
+---
+
+## Run 9 Suggested Improvements
+
+1. **Unify `warehouse_operator` and `destination_operator` roles (BUG-R9-01, BUG-R9-02, BUG-R9-03)** — The three-role specification treats "warehouse operator" as a single role that can act as both originator and destination approver depending on which warehouse they belong to. Consolidate `destination_operator` into `warehouse_operator` and derive destination-side authority from `user.locationId === movement.destinationLocationId` (the same pattern already used for `warehouse_head` origin-ownership). Update `approve-dest` route gate to `authorize('admin', 'warehouse_operator')`, and add a `userLocationId === movement.destinationLocationId` ownership check in `approveByDestination` to prevent any warehouse operator from approving movements not destined for their location.
+
+2. **Reassign finalization authority to the destination operator (BUG-R9-02)** — Change `movementService.finalizeMovement` so that the ownership guard checks `user.locationId === movement.destinationLocationId` instead of `movement.requestedById === userId`. Update the finalize route to also allow `destination_operator` (or the unified `warehouse_operator` after recommendation 1 is applied). This aligns the code with the business intent: the person receiving the goods physically confirms and closes the movement.
+
+3. **Allow destination-side actors to reject at `PENDING_HEAD_APPROVAL` (BUG-R9-03)** — Remove or relax the `destination_operator`/`warehouse_operator` stage guard in `rejectMovement` so that the destination-side actor can reject a request that hasn't yet been approved by the warehouse head. Add a corresponding location-ownership check to ensure only the operator of the destination warehouse can perform this early rejection.
+
+4. **Implement post-approval rejection for designated roles (BUG-R9-04)** — Introduce a dedicated `cancel` / `recall` transition for movements at `APPROVED_READY_FOR_FINALIZATION`. This should be accessible to: the origin `warehouse_head` (who gave first approval), the destination operator (who gave second approval), and optionally the destination `warehouse_head`. The transition should set status to `REJECTED` and record a mandatory reason and the cancelling user. The existing cancel endpoint (`PENDING_HEAD_APPROVAL` only) does not cover this stage.
+
+5. **Define destination warehouse head role in movement workflow (BUG-R9-05)** — If the destination warehouse head is intended to be a participant in the approval or rejection chain, add them explicitly: either as a third approval stage between `PENDING_DESTINATION_APPROVAL` and `APPROVED_READY_FOR_FINALIZATION`, or as a named actor on the post-approval recall transition described in recommendation 4. Currently they are indistinguishable from any other `warehouse_head` and cannot act on a movement for their warehouse.
+
+6. **Broaden the goods-in-flight lock to be goods-scoped, not route-scoped (BUG-R9-06)** — Modify `findDuplicateActiveMovement` (or add a separate pre-create guard in `createMovement`) that checks whether any of the requested goods already appear in an active movement, regardless of origin or destination. This prevents a second movement from siphoning stock that is logically committed to an in-progress movement. The check in `stockAdjustmentService.requestAdjustment` already does this correctly and can serve as the reference implementation.
+
