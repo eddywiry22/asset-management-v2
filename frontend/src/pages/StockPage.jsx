@@ -174,28 +174,34 @@ export default function StockPage() {
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-indigo-50">
                 <tr>
-                  {['Goods', 'Product ID', 'Location', 'Qty Before', 'Inbound', 'Outbound', 'Qty After (current)', 'Total Requests'].map((h) => (
+                  {['Goods', 'Product ID', 'Location', 'Qty Before', 'Inbound', 'Outbound', 'Adjustment', 'Qty After (current)', 'Total Requests'].map((h) => (
                     <th key={h} className="px-4 py-3 text-left font-semibold text-gray-700">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {periodRows.map((row, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">{row.goods?.name ?? '—'}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-gray-500">{row.goods?.productId ?? '—'}</td>
-                    <td className="px-4 py-3 text-gray-600">{row.location?.name ?? '—'}</td>
-                    <td className="px-4 py-3 tabular-nums text-gray-700">{fmt(row.qtyBefore)}</td>
-                    <td className="px-4 py-3 tabular-nums font-medium text-green-700">+{fmt(row.inbound)}</td>
-                    <td className="px-4 py-3 tabular-nums font-medium text-red-600">-{fmt(row.outbound)}</td>
-                    <td className="px-4 py-3 tabular-nums font-semibold">
-                      <span className={parseFloat(row.qtyAfter) === 0 ? 'text-red-500' : 'text-gray-900'}>
-                        {fmt(row.qtyAfter)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center text-gray-600">{row.totalMovementRequests}</td>
-                  </tr>
-                ))}
+                {periodRows.map((row, i) => {
+                  const adj = row.adjustmentNet ?? 0;
+                  const adjLabel = adj === 0 ? '—' : (adj > 0 ? `+${fmt(adj)}` : fmt(adj));
+                  const adjClass = adj > 0 ? 'text-blue-600 font-medium' : adj < 0 ? 'text-orange-600 font-medium' : 'text-gray-400';
+                  return (
+                    <tr key={i} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">{row.goods?.name ?? '—'}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{row.goods?.productId ?? '—'}</td>
+                      <td className="px-4 py-3 text-gray-600">{row.location?.name ?? '—'}</td>
+                      <td className="px-4 py-3 tabular-nums text-gray-700">{fmt(row.qtyBefore)}</td>
+                      <td className="px-4 py-3 tabular-nums font-medium text-green-700">+{fmt(row.inbound)}</td>
+                      <td className="px-4 py-3 tabular-nums font-medium text-red-600">-{fmt(row.outbound)}</td>
+                      <td className={`px-4 py-3 tabular-nums ${adjClass}`}>{adjLabel}</td>
+                      <td className="px-4 py-3 tabular-nums font-semibold">
+                        <span className={parseFloat(row.qtyAfter) === 0 ? 'text-red-500' : 'text-gray-900'}>
+                          {fmt(row.qtyAfter)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center text-gray-600">{row.totalMovementRequests}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )

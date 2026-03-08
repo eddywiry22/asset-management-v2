@@ -16,7 +16,7 @@ const STATUS_STYLES = {
   rejected: 'bg-red-100 text-red-700',
 };
 
-const TYPE_LABELS = { add: '+ Add', subtract: '- Subtract', set: '= Set' };
+const TYPE_LABELS = { add: '+ Add', subtract: '- Subtract' };
 
 const EMPTY_REQUEST = {
   goods_id: '',
@@ -280,7 +280,6 @@ export default function StockAdjustmentsPage() {
                 >
                   <option value="add">Add to stock</option>
                   <option value="subtract">Subtract from stock</option>
-                  <option value="set">Set exact quantity</option>
                 </select>
               </div>
               <div>

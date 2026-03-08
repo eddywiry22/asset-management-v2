@@ -1,5 +1,5 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Stock, Goods, Location, Movement, MovementRequest, MovementHeader, MovementDetail, sequelize } = require('../models');
+const { Stock, Goods, Location, Movement, MovementRequest, MovementHeader, MovementDetail, StockAdjustment, sequelize } = require('../models');
 
 /**
  * Build a base WHERE clause for date-range filtering on createdAt.
@@ -336,10 +336,29 @@ const getStockPeriodSummary = async ({ locationId, goodsId, startDate, endDate }
     });
     const totalMovementRequests = new Set(requestRows.map((r) => r.movementHeaderId)).size;
 
+    // Approved add/subtract adjustments within the period (reviewed_at in range).
+    // `set` type is excluded — it has no computable signed delta without a before-snapshot.
+    const adjWhere = {
+      stock_id: s.id,
+      status: 'approved',
+      adjustment_type: { [Op.in]: ['add', 'subtract'] },
+      ...dateRange('reviewed_at', startDate, endDate),
+    };
+    const adjRows = await StockAdjustment.findAll({
+      where: adjWhere,
+      attributes: ['adjustment_type', 'quantity'],
+      raw: true,
+    });
+    let adjustmentNet = 0;
+    for (const a of adjRows) {
+      const qty = parseFloat(a.quantity);
+      adjustmentNet += a.adjustment_type === 'add' ? qty : -qty;
+    }
+
     const qtyAfter = parseFloat(s.quantity);
-    // Qty before = reverse-compute from the current stock level.
-    // Max with 0 to avoid negative values when movements predating the period exist.
-    const qtyBefore = Math.max(0, qtyAfter - inbound + outbound);
+    // Qty before = reverse-compute from the current stock level, accounting for
+    // movements AND manual adjustments applied during the period.
+    const qtyBefore = Math.max(0, qtyAfter - inbound + outbound - adjustmentNet);
 
     return {
       location: s.location,
@@ -347,6 +366,7 @@ const getStockPeriodSummary = async ({ locationId, goodsId, startDate, endDate }
       qtyBefore,
       inbound,
       outbound,
+      adjustmentNet,
       qtyAfter,
       totalMovementRequests,
     };
