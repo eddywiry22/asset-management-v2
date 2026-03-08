@@ -1,17 +1,32 @@
 # Asset Management System
 
-A full-stack asset management application built with React (Vite) on the frontend and Node.js / Express on the backend, backed by MySQL via Sequelize ORM.
+A full-stack warehouse asset management application built with React (Vite) on the frontend and Node.js / Express on the backend, backed by MySQL via Sequelize ORM.
+
+---
+
+## Features
+
+- **Dashboard** – real-time KPIs for stock, movements, and requests
+- **Goods / Inventory** – manage goods with categories, vendors, and soft-delete support
+- **Stock Management** – view stock levels per location and perform stock adjustments
+- **Movement Requests** – operators submit transfer requests; admins/heads approve or reject
+- **Movements** – track inbound, outbound, and transfer movements with full detail views
+- **Admin Module** – role-gated section for Users, Locations, Categories, and Vendors CRUD
+- **Audit Log** – immutable log of all create/update/delete operations
+- **Role-based Access Control** – three warehouse roles (Admin, Head, Operator) with permission guards
+- **JWT Auth** – access + refresh token flow with bcrypt password hashing
 
 ---
 
 ## Tech Stack
 
-| Layer     | Technology                                    |
-|-----------|-----------------------------------------------|
-| Frontend  | React 18, Vite, React Router v6, Axios, TailwindCSS |
-| Backend   | Node.js, Express, Sequelize ORM, MySQL        |
-| Auth      | JWT (access + refresh tokens), bcrypt         |
-| Validation| Joi (server-side), inline validation (client) |
+| Layer      | Technology                                          |
+|------------|-----------------------------------------------------|
+| Frontend   | React 18, Vite, React Router v6, Axios, TailwindCSS |
+| Backend    | Node.js, Express, Sequelize ORM, MySQL              |
+| Auth       | JWT (access + refresh tokens), bcrypt               |
+| Validation | Joi (server-side), inline validation (client)       |
+| Deploy     | Docker Compose (MySQL + API + Nginx-served frontend) |
 
 ---
 
@@ -22,26 +37,31 @@ asset-management-v2/
 ├── backend/
 │   ├── config/          # DB config, JWT config
 │   ├── controllers/     # Request handlers (thin layer)
-│   ├── middlewares/     # Auth, validation, error handler
+│   ├── middlewares/     # Auth, RBAC, validation, error handler
 │   ├── migrations/      # Sequelize migrations
 │   ├── models/          # Sequelize model definitions
 │   ├── routes/          # Express route declarations
-│   ├── seeders/         # Database seed data
+│   ├── seeders/         # Database seed data (roles, users, goods, stock)
 │   ├── services/        # Business logic
 │   ├── utils/           # JWT helpers, response helpers, AppError
 │   ├── app.js           # Express app setup
 │   └── server.js        # Entry point (DB connect + listen)
 │
-└── frontend/
-    ├── src/
-    │   ├── components/  # Shared UI components (Spinner, Alert, ProtectedRoute)
-    │   ├── contexts/    # React Context (AuthContext)
-    │   ├── layouts/     # MainLayout (sidebar shell), AuthLayout, Sidebar
-    │   ├── pages/       # Route-level page components
-    │   ├── services/    # Axios API wrappers
-    │   └── utils/       # localStorage token helpers
-    ├── index.html
-    └── vite.config.js
+├── frontend/
+│   ├── src/
+│   │   ├── components/  # Shared UI (Spinner, Alert, ProtectedRoute, AdminRoute)
+│   │   ├── contexts/    # React Context (AuthContext)
+│   │   ├── layouts/     # MainLayout, AuthLayout, Sidebar
+│   │   ├── pages/       # Route-level page components
+│   │   │   ├── admin/   # UsersPage (admin/head only)
+│   │   │   └── movements/ # MovementsListPage, MovementNewPage, MovementDetailPage
+│   │   ├── services/    # Axios API wrappers
+│   │   └── utils/       # localStorage token helpers
+│   ├── index.html
+│   └── vite.config.js
+│
+├── docker-compose.yml   # Full-stack Docker deployment
+└── ecosystem.config.js  # PM2 process config
 ```
 
 ---
@@ -76,22 +96,24 @@ cp .env.example .env
 ### 3. Prepare the database
 
 ```bash
-# Create the MySQL databases
+# Create the MySQL database
 mysql -u root -p -e "CREATE DATABASE asset_management_dev;"
 
 # Run migrations
 npm run migrate
 
-# (Optional) Seed demo users
+# Seed roles, locations, categories, vendors, users, goods, and stock
 npm run seed
 ```
 
 **Demo credentials after seeding:**
 
-| Email                  | Password       | Role    |
-|------------------------|----------------|---------|
-| admin@example.com      | Admin@1234     | admin   |
-| manager@example.com    | Manager@1234   | manager |
+| Email                         | Password        | Role              |
+|-------------------------------|-----------------|-------------------|
+| warehouse.admin@example.com   | Admin@1234      | Warehouse Admin   |
+| warehouse.head@example.com    | Head@1234       | Warehouse Head    |
+| operator.one@example.com      | Operator@1234   | Warehouse Operator (Main) |
+| operator.two@example.com      | Operator@1234   | Warehouse Operator (Secondary) |
 
 ### 4. Start the backend
 
@@ -127,19 +149,112 @@ The Vite dev server is configured to proxy `/api/*` requests to `http://localhos
 
 ---
 
+## Docker (Full-Stack)
+
+A `docker-compose.yml` is provided for running MySQL, the API, and the frontend (Nginx) together.
+
+```bash
+# Copy and fill in backend env vars
+cp backend/.env.example backend/.env
+
+# Build and start all services
+docker-compose up --build
+```
+
+| Service  | Exposed Port | Description              |
+|----------|-------------|--------------------------|
+| db       | (internal)  | MySQL 8.0                |
+| api      | 5000        | Node.js / Express API    |
+| frontend | 80          | Nginx-served React build |
+
+---
+
 ## API Reference
 
 ### Authentication
 
-| Method | Endpoint           | Auth required | Description           |
-|--------|--------------------|---------------|-----------------------|
-| POST   | `/api/auth/login`  | No            | Login, returns tokens |
-| GET    | `/api/auth/profile`| Yes (Bearer)  | Get current user info |
+| Method | Endpoint            | Auth required | Description           |
+|--------|---------------------|---------------|-----------------------|
+| POST   | `/api/auth/login`   | No            | Login, returns tokens |
+| POST   | `/api/auth/refresh` | No            | Refresh access token  |
+| GET    | `/api/auth/profile` | Yes (Bearer)  | Get current user info |
+
+### Goods
+
+| Method | Endpoint          | Auth required | Description          |
+|--------|-------------------|---------------|----------------------|
+| GET    | `/api/goods`      | Yes           | List all goods       |
+| POST   | `/api/goods`      | Admin/Head    | Create a good        |
+| PUT    | `/api/goods/:id`  | Admin/Head    | Update a good        |
+| DELETE | `/api/goods/:id`  | Admin/Head    | Soft-delete a good   |
+
+### Stock
+
+| Method | Endpoint      | Auth required | Description         |
+|--------|---------------|---------------|---------------------|
+| GET    | `/api/stocks` | Yes           | List stock by location |
+
+### Stock Adjustments
+
+| Method | Endpoint                 | Auth required | Description             |
+|--------|--------------------------|---------------|-------------------------|
+| GET    | `/api/stock-adjustments` | Yes           | List adjustments        |
+| POST   | `/api/stock-adjustments` | Admin/Head    | Create stock adjustment |
+
+### Movements
+
+| Method | Endpoint            | Auth required | Description           |
+|--------|---------------------|---------------|-----------------------|
+| GET    | `/api/movements`    | Yes           | List movements        |
+| POST   | `/api/movements`    | Admin/Head    | Create movement       |
+| GET    | `/api/movements/:id`| Yes           | Get movement detail   |
+
+### Movement Requests
+
+| Method | Endpoint                        | Auth required | Description                  |
+|--------|---------------------------------|---------------|------------------------------|
+| GET    | `/api/movement-requests`        | Yes           | List requests                |
+| POST   | `/api/movement-requests`        | Yes           | Submit a request (operator)  |
+| PATCH  | `/api/movement-requests/:id`    | Admin/Head    | Approve or reject a request  |
+
+### Admin – Users
+
+| Method | Endpoint         | Auth required | Description         |
+|--------|------------------|---------------|---------------------|
+| GET    | `/api/users`     | Admin/Head    | List users          |
+| POST   | `/api/users`     | Admin         | Create user         |
+| PUT    | `/api/users/:id` | Admin         | Update user         |
+| DELETE | `/api/users/:id` | Admin         | Soft-delete user    |
+
+### Admin – Locations, Categories, Vendors
+
+| Method | Endpoint              | Auth required | Description              |
+|--------|-----------------------|---------------|--------------------------|
+| GET    | `/api/locations`      | Admin/Head    | List locations           |
+| POST   | `/api/locations`      | Admin         | Create location          |
+| PUT    | `/api/locations/:id`  | Admin         | Update location          |
+| DELETE | `/api/locations/:id`  | Admin         | Soft-delete location     |
+| GET    | `/api/categories`     | Admin/Head    | List categories          |
+| POST   | `/api/categories`     | Admin         | Create category          |
+| GET    | `/api/vendors`        | Admin/Head    | List vendors             |
+| POST   | `/api/vendors`        | Admin         | Create vendor            |
+
+### Audit Log
+
+| Method | Endpoint          | Auth required | Description       |
+|--------|-------------------|---------------|-------------------|
+| GET    | `/api/audit-logs` | Admin/Head    | List audit events |
+
+### Dashboard
+
+| Method | Endpoint          | Auth required | Description         |
+|--------|-------------------|---------------|---------------------|
+| GET    | `/api/dashboard`  | Yes           | Get KPI summary     |
 
 **Login request body:**
 ```json
 {
-  "email": "admin@example.com",
+  "email": "warehouse.admin@example.com",
   "password": "Admin@1234"
 }
 ```
@@ -152,10 +267,24 @@ The Vite dev server is configured to proxy `/api/*` requests to `http://localhos
   "data": {
     "accessToken": "<jwt>",
     "refreshToken": "<jwt>",
-    "user": { "id": 1, "name": "System Admin", "email": "...", "role": "admin" }
+    "user": { "id": 1, "name": "Admin Warehouse", "email": "...", "role": "admin" }
   }
 }
 ```
+
+---
+
+## Role & Permission Summary
+
+| Capability                         | Warehouse Admin | Warehouse Head | Warehouse Operator |
+|------------------------------------|:--------------:|:--------------:|:-----------------:|
+| View dashboard / goods / stock     | ✓              | ✓              | ✓                 |
+| Submit movement requests           | ✓              | ✓              | ✓                 |
+| Approve / reject movement requests | ✓              | ✓              |                   |
+| Create movements / adjustments     | ✓              | ✓              |                   |
+| Manage categories, vendors         | ✓              | ✓              |                   |
+| Manage users & locations           | ✓              |                |                   |
+| View audit log                     | ✓              | ✓              |                   |
 
 ---
 
@@ -183,18 +312,20 @@ The Vite dev server is configured to proxy `/api/*` requests to `http://localhos
 ## Available npm Scripts
 
 ### Backend
-| Script            | Description                          |
-|-------------------|--------------------------------------|
-| `npm run dev`     | Start with nodemon (hot reload)      |
-| `npm start`       | Start production server              |
-| `npm run migrate` | Run pending Sequelize migrations     |
-| `npm run migrate:undo` | Rollback last migration         |
-| `npm run seed`    | Run all seeders                      |
-| `npm run seed:undo` | Undo all seeders                   |
+
+| Script                  | Description                          |
+|-------------------------|--------------------------------------|
+| `npm run dev`           | Start with nodemon (hot reload)      |
+| `npm start`             | Start production server              |
+| `npm run migrate`       | Run pending Sequelize migrations     |
+| `npm run migrate:undo`  | Rollback last migration              |
+| `npm run seed`          | Run all seeders                      |
+| `npm run seed:undo`     | Undo all seeders                     |
 
 ### Frontend
-| Script          | Description                  |
-|-----------------|------------------------------|
-| `npm run dev`   | Vite dev server with HMR     |
-| `npm run build` | Production build to `dist/`  |
-| `npm run preview` | Preview production build   |
+
+| Script              | Description                  |
+|---------------------|------------------------------|
+| `npm run dev`       | Vite dev server with HMR     |
+| `npm run build`     | Production build to `dist/`  |
+| `npm run preview`   | Preview production build     |
