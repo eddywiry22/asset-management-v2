@@ -83,13 +83,14 @@ router.post(
 );
 
 // POST /api/movements/:id/finalize – finalize and update stock
-// BUG-07: warehouse_head removed — they perform step 2 (head approval) only.
-// Allowing them to also finalize (step 4) collapses the 4-step workflow to 2
-// steps and defeats the purpose of the destination-approval stage.
-// Only warehouse_operator (the originating party) or admin may finalize.
+// BUG-R9-02 fix: authority is now destination-location-based. Both the
+// destination warehouse_operator and the destination warehouse_head may
+// finalize — the service enforces the locationId ownership check.
+// warehouse_head removed from the original head-approval–only role to match
+// the updated workflow where any destination-assigned actor can close the movement.
 router.post(
   '/:id/finalize',
-  authorize('admin', 'warehouse_operator'),
+  authorize('admin', 'warehouse_operator', 'warehouse_head'),
   movementController.finalize
 );
 

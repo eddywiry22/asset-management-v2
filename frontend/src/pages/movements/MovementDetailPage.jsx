@@ -23,32 +23,48 @@ const fmtDate = (dateStr) =>
       })
     : '—';
 
-function RejectModal({ onConfirm, onCancel, isLoading }) {
+/**
+ * Generic modal that requires the user to supply a reason (min 5 chars) before
+ * confirming a destructive action. Used for both Reject and Recall flows.
+ */
+function ReasonModal({ title, description, confirmLabel, confirmClass, processingLabel, onConfirm, onCancel, isLoading }) {
   const [reason, setReason] = useState('');
+  const [validationError, setValidationError] = useState('');
+
+  const handleConfirm = () => {
+    if (reason.trim().length < 5) {
+      setValidationError('Reason must be at least 5 characters.');
+      return;
+    }
+    setValidationError('');
+    onConfirm(reason.trim());
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-        <h3 className="mb-3 text-lg font-semibold text-gray-900">Reject Movement</h3>
-        <p className="mb-4 text-sm text-gray-500">
-          Optionally provide a reason for rejection.
-        </p>
+        <h3 className="mb-3 text-lg font-semibold text-gray-900">{title}</h3>
+        <p className="mb-4 text-sm text-gray-500">{description}</p>
         <textarea
           rows={3}
-          className="input mb-4"
-          placeholder="Rejection reason (optional)…"
+          className="input mb-1"
+          placeholder="Reason (min 5 characters)…"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
-        <div className="flex justify-end gap-3">
+        {validationError && (
+          <p className="mb-2 text-xs text-red-600">{validationError}</p>
+        )}
+        <div className="flex justify-end gap-3 mt-3">
           <button onClick={onCancel} className="btn btn-secondary" disabled={isLoading}>
             Cancel
           </button>
           <button
-            onClick={() => onConfirm(reason)}
-            className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            onClick={handleConfirm}
+            className={`${confirmClass} disabled:opacity-50`}
             disabled={isLoading}
           >
-            {isLoading ? 'Rejecting…' : 'Confirm Rejection'}
+            {isLoading ? processingLabel : confirmLabel}
           </button>
         </div>
       </div>
@@ -81,8 +97,17 @@ export default function MovementDetailPage() {
   const [actionError, setActionError] = useState(null);
   const [successModal, setSuccessModal] = useState(null); // { title, message }
   const [showRejectModal, setShowRejectModal] = useState(false);
+  const [showRecallModal, setShowRecallModal] = useState(false);
 
-  const canManage = ['admin', 'warehouse_head', 'destination_operator'].includes(user?.role);
+  // Per-action role lists (backend enforces location ownership; frontend shows
+  // the button for any eligible role and lets the API return 403 if mismatched).
+  const canApproveHead = ['admin', 'warehouse_head'].includes(user?.role);
+  const canApproveDest = ['admin', 'destination_operator', 'warehouse_operator'].includes(user?.role);
+  // BUG-R9-02 fix: warehouse_head at destination may also finalize
+  const canFinalize    = ['admin', 'warehouse_operator', 'warehouse_head'].includes(user?.role);
+  const canReject      = ['admin', 'warehouse_head', 'destination_operator', 'warehouse_operator'].includes(user?.role);
+  // BUG-R9-04/05 fix: recall is the post-approval halt action
+  const canRecall      = ['admin', 'manager', 'warehouse_head', 'warehouse_operator', 'destination_operator'].includes(user?.role);
 
   const load = async () => {
     setIsLoading(true);
@@ -149,6 +174,21 @@ export default function MovementDetailPage() {
     }
   };
 
+  const handleRecall = async (reason) => {
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      const res = await movementService.recallMovement(id, reason);
+      setMovement(res.data.data);
+      setShowRecallModal(false);
+      setSuccessModal({ title: 'Movement Recalled', message: 'The approved movement has been recalled. Stock will not be updated.' });
+    } catch (err) {
+      setActionError(err.response?.data?.message || 'Recall failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // ---------------------------------------------------------------------------
 
   if (isLoading) {
@@ -172,11 +212,16 @@ export default function MovementDetailPage() {
 
   const { status, details = [] } = movement;
 
-  // Determine which action buttons to show
-  const showApproveHead = canManage && status === 'PENDING_HEAD_APPROVAL';
-  const showApproveDest = canManage && status === 'PENDING_DESTINATION_APPROVAL';
-  const showFinalize = canManage && status === 'APPROVED_READY_FOR_FINALIZATION';
-  const showReject = canManage && !['COMPLETED', 'REJECTED'].includes(status);
+  // Determine which action buttons to show.
+  // Reject and Recall are mutually exclusive by status:
+  //   Reject  → only at pre-finalization stages (PENDING_*)
+  //   Recall  → only at APPROVED_READY_FOR_FINALIZATION
+  // After a recall the status becomes REJECTED, hiding both buttons automatically.
+  const showApproveHead = canApproveHead && status === 'PENDING_HEAD_APPROVAL';
+  const showApproveDest = canApproveDest && status === 'PENDING_DESTINATION_APPROVAL';
+  const showFinalize    = canFinalize && status === 'APPROVED_READY_FOR_FINALIZATION';
+  const showReject      = canReject && ['PENDING_HEAD_APPROVAL', 'PENDING_DESTINATION_APPROVAL'].includes(status);
+  const showRecall      = canRecall && status === 'APPROVED_READY_FOR_FINALIZATION';
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -188,9 +233,27 @@ export default function MovementDetailPage() {
       />
 
       {showRejectModal && (
-        <RejectModal
+        <ReasonModal
+          title="Reject Movement"
+          description="Provide a reason for rejection. The requester will see this."
+          confirmLabel="Confirm Rejection"
+          confirmClass="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+          processingLabel="Rejecting…"
           onConfirm={handleReject}
           onCancel={() => setShowRejectModal(false)}
+          isLoading={actionLoading}
+        />
+      )}
+
+      {showRecallModal && (
+        <ReasonModal
+          title="Recall Approved Movement"
+          description="This will halt the movement before stock is updated. Provide a reason — it will be recorded in the audit trail."
+          confirmLabel="Confirm Recall"
+          confirmClass="rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700"
+          processingLabel="Recalling…"
+          onConfirm={handleRecall}
+          onCancel={() => setShowRecallModal(false)}
           isLoading={actionLoading}
         />
       )}
@@ -299,7 +362,7 @@ export default function MovementDetailPage() {
       </div>
 
       {/* Action buttons */}
-      {(showApproveHead || showApproveDest || showFinalize || showReject) && (
+      {(showApproveHead || showApproveDest || showFinalize || showReject || showRecall) && (
         <div className="card flex flex-wrap items-center gap-3 p-5">
           <span className="text-sm font-medium text-gray-600 mr-2">Actions:</span>
 
@@ -333,6 +396,19 @@ export default function MovementDetailPage() {
             </button>
           )}
 
+          {/* Recall: only shown at APPROVED_READY_FOR_FINALIZATION — halts the
+              movement before stock is touched. Mutually exclusive with Reject. */}
+          {showRecall && (
+            <button
+              className="rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+              onClick={() => setShowRecallModal(true)}
+              disabled={actionLoading}
+            >
+              Recall
+            </button>
+          )}
+
+          {/* Reject: only shown at PENDING_* stages — before full approval. */}
           {showReject && (
             <button
               className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
