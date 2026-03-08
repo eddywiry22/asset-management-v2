@@ -1,7 +1,8 @@
 const { Op } = require('sequelize');
-const { Category } = require('../models');
+const { Category, Goods } = require('../models');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
+const auditLogService = require('./auditLogService');
 
 /**
  * List categories with optional search and pagination.
@@ -47,11 +48,21 @@ const create = async (data, userId) => {
 
   logger.audit('CREATE', 'Category', { id: category.id, by: userId, data: { name: category.name } });
 
+  await auditLogService.createAuditLog({
+    userId,
+    action: 'CREATE',
+    entity: 'Category',
+    entityId: category.id,
+    before: null,
+    after: { name: category.name, description: category.description, isActive: category.isActive },
+  });
+
   return category;
 };
 
 /**
  * Update an existing category.
+ * Warns if deactivating a category that is referenced by active Goods.
  * @param {number} id - Category ID
  * @param {object} data - Fields to update
  * @param {number} userId - ID of the user performing the action
@@ -65,16 +76,37 @@ const update = async (id, data, userId) => {
     if (existing) throw new AppError('A category with that name already exists', 409);
   }
 
+  // Warn if deactivating a category still used by active Goods
+  if (data.isActive === false && category.isActive !== false) {
+    const goodsCount = await Goods.unscoped().count({ where: { category: id, status: 'ACTIVE' } });
+    if (goodsCount > 0) {
+      throw new AppError(
+        `Cannot deactivate category: ${goodsCount} active good(s) still reference this category.`,
+        409
+      );
+    }
+  }
+
   const before = { name: category.name, description: category.description, isActive: category.isActive };
   await category.update(data);
 
   logger.audit('UPDATE', 'Category', { id: category.id, by: userId, before, after: data });
+
+  await auditLogService.createAuditLog({
+    userId,
+    action: 'UPDATE',
+    entity: 'Category',
+    entityId: id,
+    before,
+    after: data,
+  });
 
   return category;
 };
 
 /**
  * Delete (hard delete) a category by ID.
+ * Blocked if any Goods (active or inactive) still reference this category.
  * @param {number} id
  * @param {number} userId - ID of the user performing the action
  */
@@ -82,10 +114,27 @@ const remove = async (id, userId) => {
   const category = await Category.findByPk(id);
   if (!category) throw new AppError('Category not found', 404);
 
-  const snapshot = { name: category.name };
+  const goodsCount = await Goods.unscoped().count({ where: { category: id } });
+  if (goodsCount > 0) {
+    throw new AppError(
+      `Cannot delete category: ${goodsCount} good(s) reference this category. Reassign or delete those goods first.`,
+      409
+    );
+  }
+
+  const snapshot = { name: category.name, description: category.description, isActive: category.isActive };
   await category.destroy();
 
   logger.audit('DELETE', 'Category', { id, by: userId, data: snapshot });
+
+  await auditLogService.createAuditLog({
+    userId,
+    action: 'DELETE',
+    entity: 'Category',
+    entityId: id,
+    before: snapshot,
+    after: null,
+  });
 };
 
 module.exports = { list, getById, create, update, remove };

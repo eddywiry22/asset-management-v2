@@ -1,7 +1,8 @@
 const { Op } = require('sequelize');
-const { Vendor } = require('../models');
+const { Vendor, Goods } = require('../models');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
+const auditLogService = require('./auditLogService');
 
 /**
  * List vendors with optional search and pagination.
@@ -53,11 +54,21 @@ const create = async (data, userId) => {
 
   logger.audit('CREATE', 'Vendor', { id: vendor.id, by: userId, data: { name: vendor.name } });
 
+  await auditLogService.createAuditLog({
+    userId,
+    action: 'CREATE',
+    entity: 'Vendor',
+    entityId: vendor.id,
+    before: null,
+    after: { name: vendor.name, contactPerson: vendor.contactPerson, email: vendor.email, isActive: vendor.isActive },
+  });
+
   return vendor;
 };
 
 /**
  * Update an existing vendor.
+ * Warns if deactivating a vendor that is referenced by active Goods.
  * @param {number} id - Vendor ID
  * @param {object} data - Fields to update
  * @param {number} userId - ID of the user performing the action
@@ -69,6 +80,17 @@ const update = async (id, data, userId) => {
   if (data.name && data.name !== vendor.name) {
     const existing = await Vendor.findOne({ where: { name: data.name } });
     if (existing) throw new AppError('A vendor with that name already exists', 409);
+  }
+
+  // Warn if deactivating a vendor still used by active Goods
+  if (data.isActive === false && vendor.isActive !== false) {
+    const goodsCount = await Goods.unscoped().count({ where: { vendor: id, status: 'ACTIVE' } });
+    if (goodsCount > 0) {
+      throw new AppError(
+        `Cannot deactivate vendor: ${goodsCount} active good(s) still reference this vendor.`,
+        409
+      );
+    }
   }
 
   const before = {
@@ -83,11 +105,21 @@ const update = async (id, data, userId) => {
 
   logger.audit('UPDATE', 'Vendor', { id: vendor.id, by: userId, before, after: data });
 
+  await auditLogService.createAuditLog({
+    userId,
+    action: 'UPDATE',
+    entity: 'Vendor',
+    entityId: id,
+    before,
+    after: data,
+  });
+
   return vendor;
 };
 
 /**
  * Delete (hard delete) a vendor by ID.
+ * Blocked if any Goods (active or inactive) still reference this vendor.
  * @param {number} id
  * @param {number} userId - ID of the user performing the action
  */
@@ -95,10 +127,34 @@ const remove = async (id, userId) => {
   const vendor = await Vendor.findByPk(id);
   if (!vendor) throw new AppError('Vendor not found', 404);
 
-  const snapshot = { name: vendor.name };
+  const goodsCount = await Goods.unscoped().count({ where: { vendor: id } });
+  if (goodsCount > 0) {
+    throw new AppError(
+      `Cannot delete vendor: ${goodsCount} good(s) reference this vendor. Reassign or delete those goods first.`,
+      409
+    );
+  }
+
+  const snapshot = {
+    name: vendor.name,
+    contactPerson: vendor.contactPerson,
+    email: vendor.email,
+    phone: vendor.phone,
+    address: vendor.address,
+    isActive: vendor.isActive,
+  };
   await vendor.destroy();
 
   logger.audit('DELETE', 'Vendor', { id, by: userId, data: snapshot });
+
+  await auditLogService.createAuditLog({
+    userId,
+    action: 'DELETE',
+    entity: 'Vendor',
+    entityId: id,
+    before: snapshot,
+    after: null,
+  });
 };
 
 module.exports = { list, getById, create, update, remove };

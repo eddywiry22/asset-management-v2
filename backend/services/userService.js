@@ -1,10 +1,31 @@
 const { Op } = require('sequelize');
-const { User, Location } = require('../models');
+const { User, Location, MovementHeader } = require('../models');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
 const auditLogService = require('./auditLogService');
 
-const VALID_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+/** Statuses that indicate a movement is not yet finalized or rejected */
+const ACTIVE_MOVEMENT_STATUSES = [
+  'PENDING_HEAD_APPROVAL',
+  'PENDING_DESTINATION_APPROVAL',
+  'APPROVED_READY_FOR_FINALIZATION',
+];
+
+/**
+ * Count non-finalized movement headers where this user is requester or approver.
+ */
+const countActiveMovementsForUser = async (userId) => {
+  return MovementHeader.count({
+    where: {
+      status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES },
+      [Op.or]: [
+        { requestedById: userId },
+        { headApprovedById: userId },
+        { destApprovedById: userId },
+      ],
+    },
+  });
+};
 
 /**
  * List users with optional search and pagination.
@@ -30,7 +51,7 @@ const list = async ({ search = '', page = 1, limit = 20, role } = {}) => {
 
   return {
     users: rows,
-    meta: { total: count, page, limit, totalPages: Math.ceil(count / limit) },
+    meta: { total: count, page: parseInt(page, 10), limit: parseInt(limit, 10), totalPages: Math.ceil(count / limit) },
   };
 };
 
@@ -88,8 +109,9 @@ const create = async (data, performedBy) => {
 
 /**
  * Update an existing user.
+ * Blocks deactivation if user is involved in non-finalized movements.
  * @param {number} id - User ID
- * @param {object} data - Fields to update (password excluded here – use separate endpoint)
+ * @param {object} data - Fields to update
  * @param {number} performedBy - ID of the user performing the action
  */
 const update = async (id, data, performedBy) => {
@@ -104,6 +126,18 @@ const update = async (id, data, performedBy) => {
   if (data.locationId) {
     const location = await Location.findByPk(data.locationId);
     if (!location) throw new AppError('Location not found', 404);
+  }
+
+  // Block deactivation if user has non-finalized movement responsibilities
+  const isBeingDeactivated = data.status === 'INACTIVE' && user.status !== 'INACTIVE';
+  if (isBeingDeactivated) {
+    const blockingCount = await countActiveMovementsForUser(id);
+    if (blockingCount > 0) {
+      throw new AppError(
+        `Cannot deactivate user: ${blockingCount} non-finalized movement(s) involve this user as requester or approver.`,
+        409
+      );
+    }
   }
 
   const before = {
@@ -147,6 +181,7 @@ const update = async (id, data, performedBy) => {
 
 /**
  * Delete (hard delete) a user by ID.
+ * Blocked if user is involved in non-finalized movements.
  * @param {number} id
  * @param {number} performedBy - ID of the user performing the action
  */
@@ -155,6 +190,14 @@ const remove = async (id, performedBy) => {
   if (!user) throw new AppError('User not found', 404);
 
   if (user.id === performedBy) throw new AppError('You cannot delete your own account', 403);
+
+  const blockingCount = await countActiveMovementsForUser(id);
+  if (blockingCount > 0) {
+    throw new AppError(
+      `Cannot delete user: ${blockingCount} non-finalized movement(s) involve this user as requester or approver. Reassign those movements first.`,
+      409
+    );
+  }
 
   const snapshot = { name: user.name, email: user.email, role: user.role };
   await user.destroy();

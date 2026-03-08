@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Location, LocationLog, MovementRequest } = require('../models');
+const { Location, LocationLog, MovementRequest, User } = require('../models');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
 const auditLogService = require('./auditLogService');
@@ -135,6 +135,8 @@ const update = async (id, data, performedBy) => {
 
 /**
  * Delete a location by ID.
+ * Blocked if non-finalized movement requests reference this location,
+ * or if any users are still assigned to this location.
  * @param {number} id
  * @param {number} performedBy - User ID of the actor
  */
@@ -143,16 +145,25 @@ const remove = async (id, performedBy) => {
   if (!location) throw new AppError('Location not found', 404);
 
   // Block deletion if non-finalized movement requests reference this location
-  const blockingCount = await MovementRequest.count({
+  const blockingMovements = await MovementRequest.count({
     where: {
       status: { [Op.in]: NON_FINALIZED_STATUSES },
       [Op.or]: [{ fromLocationId: id }, { toLocationId: id }],
     },
   });
 
-  if (blockingCount > 0) {
+  if (blockingMovements > 0) {
     throw new AppError(
-      `Cannot delete location: ${blockingCount} non-finalized movement request(s) involve this location.`,
+      `Cannot delete location: ${blockingMovements} non-finalized movement request(s) involve this location.`,
+      409
+    );
+  }
+
+  // Block deletion if users are still assigned to this location
+  const assignedUsers = await User.count({ where: { locationId: id } });
+  if (assignedUsers > 0) {
+    throw new AppError(
+      `Cannot delete location: ${assignedUsers} user(s) are assigned to this location. Reassign them first.`,
       409
     );
   }
