@@ -20,13 +20,14 @@ A full-stack warehouse asset management application built with React (Vite) on t
 
 ## Tech Stack
 
-| Layer      | Technology                                          |
-|------------|-----------------------------------------------------|
-| Frontend   | React 18, Vite, React Router v6, Axios, TailwindCSS |
-| Backend    | Node.js, Express, Sequelize ORM, MySQL              |
-| Auth       | JWT (access + refresh tokens), bcrypt               |
-| Validation | Joi (server-side), inline validation (client)       |
-| Deploy     | Docker Compose (MySQL + API + Nginx-served frontend) |
+| Layer      | Technology                                                        |
+|------------|-------------------------------------------------------------------|
+| Frontend   | React 18, Vite, React Router v6, Axios, TailwindCSS, Recharts    |
+| Backend    | Node.js, Express, Sequelize ORM, MySQL                            |
+| Auth       | JWT (access + refresh tokens), bcrypt                             |
+| Validation | Joi (server-side), inline validation (client)                     |
+| Testing    | Jest (unit tests, mocked DB)                                      |
+| Deploy     | Docker Compose (MySQL + API + Nginx-served frontend), PM2         |
 
 ---
 
@@ -171,6 +172,12 @@ docker-compose up --build
 
 ## API Reference
 
+### Health
+
+| Method | Endpoint  | Auth required | Description                  |
+|--------|-----------|---------------|------------------------------|
+| GET    | `/health` | No            | Service health check (uptime, DB status) |
+
 ### Authentication
 
 | Method | Endpoint            | Auth required | Description           |
@@ -288,6 +295,37 @@ docker-compose up --build
 
 ---
 
+## Testing
+
+The backend ships with a Jest-based unit test suite covering the core warehouse operator workflow.
+
+```bash
+cd backend
+npm test
+```
+
+Tests mock all Sequelize models and services, so no live database is required. Key scenarios covered:
+
+- Movement request creation and validation
+- Multi-step approval flow (head approval → destination approval → finalization)
+- Stock quantity updates on movement finalization
+- Rejection handling and status guards
+- Inactive user / inactive goods rejection
+- Duplicate request prevention
+
+See `simulation-test.md` in the project root for documented end-to-end test scenarios and results.
+
+---
+
+## Additional Documentation
+
+| File | Description |
+|------|-------------|
+| `ai-system-architecture.md` | Canonical system design, data model, and business rules reference |
+| `simulation-test.md` | End-to-end workflow scenarios and expected system behavior |
+
+---
+
 ## Adding New Modules
 
 ### Backend
@@ -321,11 +359,13 @@ docker-compose up --build
 | `npm run migrate:undo`  | Rollback last migration              |
 | `npm run seed`          | Run all seeders                      |
 | `npm run seed:undo`     | Undo all seeders                     |
+| `npm test`              | Run Jest unit test suite             |
 
 ### Frontend
 
-| Script              | Description                  |
-|---------------------|------------------------------|
-| `npm run dev`       | Vite dev server with HMR     |
-| `npm run build`     | Production build to `dist/`  |
-| `npm run preview`   | Preview production build     |
+| Script              | Description                       |
+|---------------------|-----------------------------------|
+| `npm run dev`       | Vite dev server with HMR          |
+| `npm run build`     | Production build to `dist/`       |
+| `npm run preview`   | Preview production build locally  |
+| `npm run lint`      | ESLint with strict warnings       |
