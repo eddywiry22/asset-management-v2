@@ -9,11 +9,11 @@ A full-stack warehouse asset management application built with React (Vite) on t
 - **Dashboard** – real-time KPIs for stock, movements, and requests
 - **Goods / Inventory** – manage goods with categories, vendors, and soft-delete support
 - **Stock Management** – view stock levels per location and perform stock adjustments
-- **Movement Requests** – operators submit transfer requests; admins/heads approve or reject
-- **Movements** – track inbound, outbound, and transfer movements with full detail views
+- **Movement Requests** – operators submit transfer requests; heads/destination operators approve, reject, or recall
+- **Movements** – multi-step approval workflow (head approval → destination approval → finalization) with recall support
 - **Admin Module** – role-gated section for Users, Locations, Categories, and Vendors CRUD
 - **Audit Log** – immutable log of all create/update/delete operations
-- **Role-based Access Control** – three warehouse roles (Admin, Head, Operator) with permission guards
+- **Role-based Access Control** – warehouse roles (Admin, Head, Operator, Destination Operator) with location-ownership permission guards
 - **JWT Auth** – access + refresh token flow with bcrypt password hashing
 
 ---
@@ -210,13 +210,19 @@ docker-compose up --build
 
 ### Movements
 
-| Method | Endpoint            | Auth required | Description           |
-|--------|---------------------|---------------|-----------------------|
-| GET    | `/api/movements`    | Yes           | List movements        |
-| POST   | `/api/movements`    | Admin/Head    | Create movement       |
-| GET    | `/api/movements/:id`| Yes           | Get movement detail   |
+| Method | Endpoint                         | Auth required                        | Description                                      |
+|--------|----------------------------------|--------------------------------------|--------------------------------------------------|
+| GET    | `/api/movements`                 | Yes                                  | List movements (filterable by status, location)  |
+| POST   | `/api/movements`                 | Admin / Head / Operator              | Create movement                                  |
+| GET    | `/api/movements/:id`             | Yes                                  | Get movement detail                              |
+| POST   | `/api/movements/:id/approve-head`| Admin / Head                         | Head approves first stage                        |
+| POST   | `/api/movements/:id/approve-dest`| Admin / Dest. Operator / Operator    | Destination-side approves second stage           |
+| POST   | `/api/movements/:id/finalize`    | Admin / Operator / Head (dest.)      | Finalize and update stock (destination-location-based authority) |
+| POST   | `/api/movements/:id/reject`      | Admin / Head / Dest. Operator / Operator | Reject at PENDING_* stages (reason required) |
+| POST   | `/api/movements/:id/recall`      | Admin / Head / Operator / Dest. Operator | Recall at APPROVED_READY_FOR_FINALIZATION (reason required) |
+| POST   | `/api/movements/:id/cancel`      | Admin / Operator                     | Operator withdraws their own pending request     |
 
-### Movement Requests
+### Movement Requests (Simple)
 
 | Method | Endpoint                        | Auth required | Description                  |
 |--------|---------------------------------|---------------|------------------------------|
@@ -283,15 +289,24 @@ docker-compose up --build
 
 ## Role & Permission Summary
 
-| Capability                         | Warehouse Admin | Warehouse Head | Warehouse Operator |
-|------------------------------------|:--------------:|:--------------:|:-----------------:|
-| View dashboard / goods / stock     | ✓              | ✓              | ✓                 |
-| Submit movement requests           | ✓              | ✓              | ✓                 |
-| Approve / reject movement requests | ✓              | ✓              |                   |
-| Create movements / adjustments     | ✓              | ✓              |                   |
-| Manage categories, vendors         | ✓              | ✓              |                   |
-| Manage users & locations           | ✓              |                |                   |
-| View audit log                     | ✓              | ✓              |                   |
+Authority over movement workflow actions is **location-ownership-based** — the role
+grant at the route level is a prerequisite, but the service layer additionally validates
+that the acting user is assigned to the correct location (origin or destination).
+
+| Capability                              | Admin | Warehouse Head | Warehouse Operator | Destination Operator |
+|-----------------------------------------|:-----:|:--------------:|:------------------:|:--------------------:|
+| View dashboard / goods / stock          | ✓     | ✓              | ✓                  | ✓                    |
+| Create movement requests                | ✓     | ✓              | ✓                  |                      |
+| Head approval (origin location)         | ✓     | ✓ (origin)     |                    |                      |
+| Destination approval (dest. location)   | ✓     |                | ✓ (dest.)          | ✓ (dest.)            |
+| Finalize movement (dest. location)      | ✓     | ✓ (dest.)      | ✓ (dest.)          |                      |
+| Reject movement (PENDING_* stages)      | ✓     | ✓ (origin)     | ✓ (dest.)          | ✓ (dest.)            |
+| Recall movement (APPROVED_READY stage)  | ✓     | ✓              | ✓ (dest.)          | ✓ (dest.)            |
+| Cancel own pending request              | ✓     |                | ✓                  |                      |
+| Create stock adjustments                | ✓     | ✓              |                    |                      |
+| Manage categories, vendors              | ✓     | ✓              |                    |                      |
+| Manage users & locations                | ✓     |                |                    |                      |
+| View audit log                          | ✓     | ✓              |                    |                      |
 
 ---
 
@@ -309,9 +324,10 @@ Tests mock all Sequelize models and services, so no live database is required. K
 - Movement request creation and validation
 - Multi-step approval flow (head approval → destination approval → finalization)
 - Stock quantity updates on movement finalization
-- Rejection handling and status guards
+- Rejection handling and status guards (stage-gated, location-ownership enforced)
+- Post-approval recall at `APPROVED_READY_FOR_FINALIZATION`
 - Inactive user / inactive goods rejection
-- Duplicate request prevention
+- Duplicate request prevention and goods-scoped in-flight lock
 
 See `simulation-test.md` in the project root for documented end-to-end test scenarios and results.
 

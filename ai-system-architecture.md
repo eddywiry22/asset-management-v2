@@ -61,12 +61,11 @@ Active Sequelize models registered in `models/index.js`:
 - **MovementDetail** – table `movement_details` (line items for a MovementHeader)
 - **AuditLog** – table `audit_logs`
 
-Legacy/unused models still present in `models/` but NOT in `models/index.js`:
+Legacy / dormant models still present in `models/`:
 
-- `Good.js` (superseded by `Goods.js`)
-- `Goods.js` (the active one registered as `db.Goods`)
-- `Item.js` (registered but not used in current services)
-- `Movement.js` (simple movement model, superseded by MovementHeader workflow)
+- `Good.js` — **not registered** in `models/index.js`; superseded by `Goods.js`.
+- `Item.js` — registered as `db.Item` but has no associations and is not referenced by any current service. The `items` table is a legacy artifact; `Goods` is the single source of truth for products.
+- `Movement.js` — registered as `db.Movement` but superseded by the `MovementHeader` + `MovementDetail` workflow. No current service uses it.
 
 ---
 
@@ -159,40 +158,54 @@ Supports multiple goods per movement via line items.
 1. Operator creates movement
    MovementHeader.status = PENDING_HEAD_APPROVAL
 
-2. Warehouse Head approves
+2. Warehouse Head approves (origin location)
    MovementHeader.status = PENDING_DESTINATION_APPROVAL
 
-3. Destination Operator approves
+3. Destination-side actor approves (destination location)
    MovementHeader.status = APPROVED_READY_FOR_FINALIZATION
 
-4. Finalization updates stock on both sides
+4. Destination-side actor finalizes — stock updated on both sides
    MovementHeader.status = COMPLETED
 ```
 
-Rejection at any step sets status to `REJECTED` and records `rejectedById`,
-`rejectedAt`, and `rejectionReason` on the header.
+Rejection at any **PENDING_*** step sets status to `REJECTED` and records
+`rejectedById`, `rejectedAt`, and `rejectionReason` on the header.
+
+**Recall** — a dedicated `POST /api/movements/:id/recall` endpoint handles the
+`APPROVED_READY_FOR_FINALIZATION → REJECTED` transition. This is distinct from
+rejection, which is blocked at that stage. Recall reuses the same `rejectedById`,
+`rejectedAt`, and `rejectionReason` fields.
 
 ### Approval Ownership Rules
 
-| Step | Role required | Location constraint |
-|------|---------------|---------------------|
-| Head approval | `warehouse_head` | Must belong to the **origin** location (`user.locationId === header.originLocationId`). `admin` and `manager` are exempt. |
-| Destination approval | `destination_operator` | Must belong to the **destination** location (`user.locationId === header.destinationLocationId`). `admin` and `manager` are exempt. |
-| Finalization | `warehouse_operator` | Must be the **requester** of the movement. `admin` and `manager` may finalize any movement. |
+Authority is **location-ownership-based**: the route gate checks the role, the
+service layer validates the user's `locationId` against the movement's origin or
+destination. `admin` is always exempt from location checks.
+
+| Action | Allowed roles | Location constraint |
+|--------|---------------|---------------------|
+| Create movement | `admin`, `warehouse_head`, `warehouse_operator` | None |
+| Head approval | `admin`, `warehouse_head` | User must belong to **origin** location |
+| Destination approval | `admin`, `destination_operator`, `warehouse_operator` | User must belong to **destination** location |
+| Finalize | `admin`, `warehouse_operator`, `warehouse_head` | User must belong to **destination** location |
+| Reject (PENDING_* stages) | `admin`, `warehouse_head` (origin), `warehouse_operator` / `destination_operator` (dest.) | Origin-assigned head rejects at `PENDING_HEAD_APPROVAL`; destination-assigned actors reject at either pending stage |
+| Recall (APPROVED_READY stage) | `admin`, `manager`, `warehouse_head`, `warehouse_operator`, `destination_operator` | Origin/destination warehouse_head, or any destination-assigned operator |
+| Cancel (own request) | `admin`, `warehouse_operator` | None (requester identity check in service) |
 
 ---
 
 ## DUPLICATE MOVEMENT RULE
 
-If a movement request exists with:
+Two checks are applied inside the `createMovement` transaction:
 
-- same origin
-- same destination
-- same items
+1. **Route-scoped duplicate check** — if a non-finalized movement exists with
+   the same origin, destination, and identical goods set, a new request is blocked.
 
-and is not finalized
-
-a new request cannot be created.
+2. **Goods-scoped in-flight lock** (`findActiveMovementForGoods`) — if any of the
+   requested goods appear in **any** active movement (regardless of origin/destination),
+   the new request is blocked. This matches the equivalent lock already applied in
+   `stockAdjustmentService` and prevents the same goods from being simultaneously
+   committed to multiple movements.
 
 ---
 
@@ -216,12 +229,14 @@ Admin module routes and their pages:
 
 ## ROLE DEFINITIONS
 
-| Role                  | Key Capabilities                                              |
-|-----------------------|---------------------------------------------------------------|
-| `admin`               | Full access; manage users, locations, categories, vendors     |
-| `warehouse_head`      | Approve/reject movements, view audit log, manage master data  |
-| `warehouse_operator`  | Submit movement requests, view own stock and movements        |
-| `destination_operator`| Confirm inbound transfers targeting their location            |
+| Role                  | Key Capabilities                                                                                            |
+|-----------------------|-------------------------------------------------------------------------------------------------------------|
+| `admin`               | Full access; manage users, locations, categories, vendors; exempt from location-ownership checks            |
+| `warehouse_head`      | Head approval (origin), destination approval + finalize + recall (destination), manage master data, audit   |
+| `warehouse_operator`  | Create movements, destination approval + finalize (if at dest. location), reject/recall (dest.), cancel own |
+| `destination_operator`| Destination approval, reject and recall at destination location                                             |
+| `manager`             | View/create/edit assets and categories, create and approve movements, view reports                          |
+| `viewer`              | Read-only access to dashboard, assets, categories, reports, and movements                                   |
 
 Permissions are also stored in the `permissions` table per role per module
 with boolean flags: `can_view`, `can_create`, `can_edit`, `can_delete`,
@@ -240,8 +255,10 @@ with boolean flags: `can_view`, `can_create`, `can_edit`, `can_delete`,
 - 365-day maximum date-range validation (client-side) on Dashboard and Stock pages
 - Movement request status counts
 - Recent movement activity
-- Movement list filterable by origin and destination location
-  (`GET /api/movements?originLocationId=&destinationLocationId=`)
+- Movement list filterable by status, origin and destination location
+  (`GET /api/movements?status=&originLocationId=&destinationLocationId=`)
+- Movement recall — `POST /api/movements/:id/recall` transitions
+  `APPROVED_READY_FOR_FINALIZATION → REJECTED` without updating stock
 
 ### Stock Period Summary Algorithm
 
@@ -432,15 +449,15 @@ erDiagram
         int requested_by_id FK
         enum status "PENDING_HEAD_APPROVAL|PENDING_DESTINATION_APPROVAL|APPROVED_READY_FOR_FINALIZATION|COMPLETED|REJECTED"
         text notes
-        text rejection_reason
+        text rejection_reason "populated on reject OR recall"
         int head_approved_by_id FK
         datetime head_approved_at
         int dest_approved_by_id FK
         datetime dest_approved_at
         int finalized_by_id FK
         datetime finalized_at
-        int rejected_by_id FK
-        datetime rejected_at
+        int rejected_by_id FK "populated on reject OR recall"
+        datetime rejected_at "populated on reject OR recall"
         datetime created_at
         datetime updated_at
     }
