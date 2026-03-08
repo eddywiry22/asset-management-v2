@@ -46,7 +46,7 @@ const PERMISSIONS = {
   warehouse_operator: {
     dashboard:  ['view'],
     assets:     ['view'],
-    movements:  ['view', 'create'],
+    movements:  ['view', 'create', 'approve'],
   },
   warehouse_head: {
     dashboard:  ['view'],
