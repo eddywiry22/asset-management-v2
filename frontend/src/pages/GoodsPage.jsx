@@ -7,7 +7,10 @@ import {
   createGoods,
   updateGoods,
   deleteGoods,
+  getGoodsImpact,
 } from '@/services/goodsService';
+import categoryService from '@/services/categoryService';
+import vendorService from '@/services/vendorService';
 
 const EMPTY_FORM = {
   product_id: '',
@@ -25,7 +28,7 @@ const STATUS_BADGE = {
 
 // ─── GoodsForm (create / edit) ───────────────────────────────────────────────
 
-function GoodsForm({ initial, onSave, onCancel, isSubmitting, serverError }) {
+function GoodsForm({ initial, onSave, onCancel, isSubmitting, serverError, categories, vendors }) {
   const [form, setForm] = useState(initial ?? EMPTY_FORM);
   const [fieldErrors, setFieldErrors] = useState({});
 
@@ -41,8 +44,8 @@ function GoodsForm({ initial, onSave, onCancel, isSubmitting, serverError }) {
     const errs = {};
     if (!form.product_id.trim()) errs.product_id = 'Product ID is required';
     if (!form.name.trim()) errs.name = 'Name is required';
-    if (!form.category.trim()) errs.category = 'Category is required';
-    if (!form.vendor.trim()) errs.vendor = 'Vendor is required';
+    if (!form.category) errs.category = 'Category is required';
+    if (!form.vendor) errs.vendor = 'Vendor is required';
     if (!['ACTIVE', 'INACTIVE'].includes(form.status)) errs.status = 'Invalid status';
     return errs;
   };
@@ -54,7 +57,11 @@ function GoodsForm({ initial, onSave, onCancel, isSubmitting, serverError }) {
       setFieldErrors(errs);
       return;
     }
-    onSave(form);
+    onSave({
+      ...form,
+      category: Number(form.category),
+      vendor: Number(form.vendor),
+    });
   };
 
   return (
@@ -107,16 +114,19 @@ function GoodsForm({ initial, onSave, onCancel, isSubmitting, serverError }) {
           <label className="label" htmlFor="category">
             Category <span className="text-red-500">*</span>
           </label>
-          <input
+          <select
             id="category"
             name="category"
-            type="text"
             className={`input ${fieldErrors.category ? 'border-red-400 focus:ring-red-400' : ''}`}
             value={form.category}
             onChange={handleChange}
             disabled={isSubmitting}
-            placeholder="e.g. Furniture"
-          />
+          >
+            <option value="">Select category…</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
           {fieldErrors.category && (
             <p className="mt-1 text-xs text-red-600">{fieldErrors.category}</p>
           )}
@@ -127,16 +137,19 @@ function GoodsForm({ initial, onSave, onCancel, isSubmitting, serverError }) {
           <label className="label" htmlFor="vendor">
             Vendor <span className="text-red-500">*</span>
           </label>
-          <input
+          <select
             id="vendor"
             name="vendor"
-            type="text"
             className={`input ${fieldErrors.vendor ? 'border-red-400 focus:ring-red-400' : ''}`}
             value={form.vendor}
             onChange={handleChange}
             disabled={isSubmitting}
-            placeholder="e.g. IKEA"
-          />
+          >
+            <option value="">Select vendor…</option>
+            {vendors.map((v) => (
+              <option key={v.id} value={v.id}>{v.name}</option>
+            ))}
+          </select>
           {fieldErrors.vendor && (
             <p className="mt-1 text-xs text-red-600">{fieldErrors.vendor}</p>
           )}
@@ -237,6 +250,75 @@ function DeleteConfirmModal({ goods, onConfirm, onCancel, isDeleting }) {
   );
 }
 
+// ─── DeactivateConfirmModal ───────────────────────────────────────────────────
+
+function DeactivateConfirmModal({ impact, onConfirm, onCancel, isSubmitting }) {
+  if (!impact) return null;
+  const { goods, stocks, activeMovements } = impact;
+  const hasBlockers = activeMovements.length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="card w-full max-w-lg p-6 space-y-4">
+        <h3 className="text-lg font-semibold text-gray-900">Deactivate Goods</h3>
+        <p className="text-sm text-gray-600">
+          You are about to deactivate{' '}
+          <span className="font-medium text-gray-900">{goods.name}</span> ({goods.productId}).
+          Inactive goods cannot be used in movement requests or stock adjustments.
+        </p>
+
+        {hasBlockers && (
+          <div className="rounded-md bg-red-50 p-3">
+            <p className="text-sm font-medium text-red-800 mb-1">
+              Cannot deactivate — active movements exist:
+            </p>
+            <ul className="list-disc list-inside text-sm text-red-700 space-y-0.5">
+              {activeMovements.map((m) => (
+                <li key={m.id}>{m.movementNumber} ({m.status})</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {!hasBlockers && stocks.length > 0 && (
+          <div className="rounded-md bg-yellow-50 p-3">
+            <p className="text-sm font-medium text-yellow-800 mb-1">
+              Affected stock records ({stocks.length}):
+            </p>
+            <ul className="list-disc list-inside text-sm text-yellow-700 space-y-0.5">
+              {stocks.map((s) => (
+                <li key={s.id}>
+                  Location {s.locationId} — qty: {parseFloat(s.quantity).toLocaleString()}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-yellow-700">
+              These stock records will remain but the goods will not be usable in new requests.
+            </p>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-3">
+          <button className="btn btn-secondary" onClick={onCancel} disabled={isSubmitting}>
+            Cancel
+          </button>
+          <button
+            className="btn bg-orange-600 text-white hover:bg-orange-700 focus:ring-orange-500 disabled:opacity-50"
+            onClick={onConfirm}
+            disabled={isSubmitting || hasBlockers}
+          >
+            {isSubmitting ? (
+              <span className="flex items-center gap-2"><Spinner size="sm" /> Deactivating…</span>
+            ) : (
+              'Confirm Deactivate'
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── GoodsPage ────────────────────────────────────────────────────────────────
 
 export default function GoodsPage() {
@@ -247,6 +329,9 @@ export default function GoodsPage() {
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState('');
 
+  const [categories, setCategories] = useState([]);
+  const [vendors, setVendors] = useState([]);
+
   // Panel state: null | 'create' | { ...goodsRecord } (edit)
   const [panel, setPanel] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -255,6 +340,11 @@ export default function GoodsPage() {
   // Delete state
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Deactivation confirmation state
+  const [deactivateImpact, setDeactivateImpact] = useState(null);
+  const [pendingUpdateData, setPendingUpdateData] = useState(null);
+  const [isDeactivating, setIsDeactivating] = useState(false);
 
   // Toast notification
   const [toast, setToast] = useState(null);
@@ -279,6 +369,8 @@ export default function GoodsPage() {
 
   useEffect(() => {
     fetchGoods();
+    categoryService.list().then((r) => setCategories(r.data?.data ?? [])).catch(() => {});
+    vendorService.list().then((r) => setVendors(r.data?.data ?? [])).catch(() => {});
   }, [fetchGoods]);
 
   // ── Create ────────────────────────────────────────────────────────────────
@@ -306,10 +398,29 @@ export default function GoodsPage() {
   // ── Update ────────────────────────────────────────────────────────────────
 
   const handleUpdate = async (formData) => {
+    const goodsId = panel.id;
+    const currentStatus = panel.status;
+
+    // If switching to INACTIVE, fetch impact first and show confirmation modal
+    if (formData.status === 'INACTIVE' && currentStatus === 'ACTIVE') {
+      setIsSubmitting(true);
+      try {
+        const res = await getGoodsImpact(goodsId);
+        setDeactivateImpact(res.data);
+        setPendingUpdateData({ id: goodsId, formData });
+        setPanel(null);
+      } catch (err) {
+        setFormError(err?.response?.data?.message ?? 'Failed to load impact data');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     setIsSubmitting(true);
     setFormError('');
     try {
-      await updateGoods(panel.id, formData);
+      await updateGoods(goodsId, formData);
       setPanel(null);
       showToast('Goods updated successfully');
       fetchGoods();
@@ -322,6 +433,24 @@ export default function GoodsPage() {
       }
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const confirmDeactivate = async () => {
+    if (!pendingUpdateData) return;
+    setIsDeactivating(true);
+    try {
+      await updateGoods(pendingUpdateData.id, pendingUpdateData.formData);
+      setDeactivateImpact(null);
+      setPendingUpdateData(null);
+      showToast('Goods deactivated successfully');
+      fetchGoods();
+    } catch (err) {
+      showToast(err?.response?.data?.message ?? 'Failed to deactivate goods', 'error');
+      setDeactivateImpact(null);
+      setPendingUpdateData(null);
+    } finally {
+      setIsDeactivating(false);
     }
   };
 
@@ -379,6 +508,16 @@ export default function GoodsPage() {
         />
       )}
 
+      {/* Deactivation confirmation modal */}
+      {deactivateImpact && (
+        <DeactivateConfirmModal
+          impact={deactivateImpact}
+          onConfirm={confirmDeactivate}
+          onCancel={() => { setDeactivateImpact(null); setPendingUpdateData(null); }}
+          isSubmitting={isDeactivating}
+        />
+      )}
+
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
@@ -406,6 +545,8 @@ export default function GoodsPage() {
             onCancel={closePanel}
             isSubmitting={isSubmitting}
             serverError={formError}
+            categories={categories}
+            vendors={vendors}
           />
         </div>
       )}
@@ -444,43 +585,47 @@ export default function GoodsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 bg-white">
-                {goods.map((item) => (
-                  <tr key={item.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-700">
-                      {item.product_id}
-                    </td>
-                    <td className="px-4 py-3 font-medium text-gray-900">{item.name}</td>
-                    <td className="px-4 py-3 text-gray-600">{item.category}</td>
-                    <td className="px-4 py-3 text-gray-600">{item.vendor}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          STATUS_BADGE[item.status] ?? 'bg-gray-100 text-gray-700'
-                        }`}
-                      >
-                        {item.status}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => openEdit(item)}
-                          className="rounded px-2 py-1 text-xs font-medium text-primary-600 hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                {goods.map((item) => {
+                  const categoryName = categories.find((c) => c.id === item.category)?.name ?? '—';
+                  const vendorName = vendors.find((v) => v.id === item.vendor)?.name ?? '—';
+                  return (
+                    <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-700">
+                        {item.product_id}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-900">{item.name}</td>
+                      <td className="px-4 py-3 text-gray-600">{categoryName}</td>
+                      <td className="px-4 py-3 text-gray-600">{vendorName}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                            STATUS_BADGE[item.status] ?? 'bg-gray-100 text-gray-700'
+                          }`}
                         >
-                          Edit
-                        </button>
-                        {isAdmin && (
+                          {item.status}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <div className="flex items-center gap-2">
                           <button
-                            onClick={() => setDeleteTarget(item)}
-                            className="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
+                            onClick={() => openEdit(item)}
+                            className="rounded px-2 py-1 text-xs font-medium text-primary-600 hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-400"
                           >
-                            Delete
+                            Edit
                           </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {isAdmin && (
+                            <button
+                              onClick={() => setDeleteTarget(item)}
+                              className="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

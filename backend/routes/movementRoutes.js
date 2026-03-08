@@ -54,7 +54,7 @@ router.post('/preview', validate(previewSchema), movementController.preview);
 // POST /api/movements – warehouse operators create movement requests
 router.post(
   '/',
-  authorize('admin', 'manager', 'warehouse_operator', 'warehouse_head'),
+  authorize('admin', 'warehouse_operator', 'warehouse_head'),
   validate(createSchema),
   movementController.create
 );
@@ -68,14 +68,14 @@ router.get('/:id', movementController.getOne);
 // POST /api/movements/:id/approve-head – warehouse head approves first stage
 router.post(
   '/:id/approve-head',
-  authorize('admin', 'manager', 'warehouse_head'),
+  authorize('admin', 'warehouse_head'),
   movementController.approveHead
 );
 
 // POST /api/movements/:id/approve-dest – destination operator approves second stage
 router.post(
   '/:id/approve-dest',
-  authorize('admin', 'manager', 'destination_operator'),
+  authorize('admin', 'destination_operator'),
   movementController.approveDest
 );
 
@@ -83,17 +83,17 @@ router.post(
 // BUG-07: warehouse_head removed — they perform step 2 (head approval) only.
 // Allowing them to also finalize (step 4) collapses the 4-step workflow to 2
 // steps and defeats the purpose of the destination-approval stage.
-// Only warehouse_operator (the originating party) or admin/manager may finalize.
+// Only warehouse_operator (the originating party) or admin may finalize.
 router.post(
   '/:id/finalize',
-  authorize('admin', 'manager', 'warehouse_operator'),
+  authorize('admin', 'warehouse_operator'),
   movementController.finalize
 );
 
 // POST /api/movements/:id/reject – reject with mandatory reason
 router.post(
   '/:id/reject',
-  authorize('admin', 'manager', 'warehouse_head', 'destination_operator'),
+  authorize('admin', 'warehouse_head', 'destination_operator'),
   validate(rejectSchema),
   movementController.reject
 );
@@ -102,7 +102,7 @@ router.post(
 // BUG-08: provides a cancellation path so operators can correct mistakes without admin help.
 router.post(
   '/:id/cancel',
-  authorize('admin', 'manager', 'warehouse_operator'),
+  authorize('admin', 'warehouse_operator'),
   movementController.cancel
 );
 

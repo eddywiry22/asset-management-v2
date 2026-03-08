@@ -6,8 +6,8 @@ import {
   approveAdjustment,
   rejectAdjustment,
 } from '@/services/stockAdjustmentService';
-import { getGoods } from '@/services/goodsService';
-import { getLocations } from '@/services/locationService';
+import { listActiveGoods } from '@/services/goodsService';
+import locationService from '@/services/locationService';
 
 const STATUS_STYLES = {
   pending: 'bg-yellow-100 text-yellow-700',
@@ -27,7 +27,7 @@ const EMPTY_REQUEST = {
 
 export default function StockAdjustmentsPage() {
   const { user } = useAuth();
-  const canReview = user?.role === 'admin' || user?.role === 'manager';
+  const canReview = ['admin', 'warehouse_head'].includes(user?.role);
 
   const [adjustments, setAdjustments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -65,8 +65,8 @@ export default function StockAdjustmentsPage() {
   }, [filterStatus]);
 
   useEffect(() => {
-    getGoods({ isActive: true }).then((r) => setGoodsList(r.data || [])).catch(() => {});
-    getLocations({ isActive: true }).then((r) => setLocationsList(r.data || [])).catch(() => {});
+    listActiveGoods().then((r) => setGoodsList(r.data || [])).catch(() => {});
+    locationService.getAll().then((r) => setLocationsList(r.data?.data || [])).catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -223,7 +223,7 @@ export default function StockAdjustmentsPage() {
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
             <h3 className="mb-4 text-lg font-semibold text-gray-900">Request Stock Adjustment</h3>
             <p className="mb-4 text-xs text-gray-500 bg-yellow-50 rounded p-2">
-              This adjustment will be submitted for approval by an admin or manager before stock is updated.
+              This adjustment will be submitted for approval by an admin or warehouse head before stock is updated.
             </p>
             {reqError && <div className="mb-3 rounded-md bg-red-50 p-2 text-sm text-red-700">{reqError}</div>}
             <form onSubmit={handleRequest} className="space-y-4">
@@ -237,7 +237,7 @@ export default function StockAdjustmentsPage() {
                 >
                   <option value="">Select goods…</option>
                   {goodsList.map((g) => (
-                    <option key={g.id} value={g.id}>{g.name} ({g.sku})</option>
+                    <option key={g.id} value={g.id}>{g.name} ({g.productId})</option>
                   ))}
                 </select>
               </div>

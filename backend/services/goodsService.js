@@ -1,5 +1,7 @@
-const { Goods, AuditLog } = require('../models');
+const { Op } = require('sequelize');
+const { Goods, Stock, MovementHeader, MovementDetail, AuditLog } = require('../models');
 const AppError = require('../utils/AppError');
+const { ACTIVE_MOVEMENT_STATUSES } = require('../utils/constants');
 
 /**
  * Write an audit log entry for a Goods operation.
@@ -88,11 +90,30 @@ const createGoods = async (data, actor) => {
 const updateGoods = async (id, data, actor) => {
   const goods = await getGoodsById(id);
 
-  // If product_id is being changed, ensure uniqueness
-  if (data.product_id && data.product_id !== goods.product_id) {
-    const existing = await Goods.findOne({ where: { product_id: data.product_id } });
+  // If productId is being changed, ensure uniqueness (BUG-R7-08: use Sequelize attribute name, not raw column)
+  if (data.product_id && data.product_id !== goods.productId) {
+    const existing = await Goods.unscoped().findOne({ where: { productId: data.product_id } });
     if (existing) {
       throw new AppError(`product_id "${data.product_id}" is already in use`, 409);
+    }
+  }
+
+  // If deactivating goods, block if they are part of an active movement (BUG-R7-07)
+  if (data.status === 'INACTIVE' && goods.status === 'ACTIVE') {
+    const activeMovement = await MovementHeader.findOne({
+      where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+      include: [{
+        model: MovementDetail,
+        as: 'details',
+        where: { goodsId: id },
+        required: true,
+      }],
+    });
+    if (activeMovement) {
+      throw new AppError(
+        `Cannot deactivate goods that are part of active movement ${activeMovement.movementNumber}. Finalize or reject that movement first.`,
+        409
+      );
     }
   }
 
@@ -115,10 +136,42 @@ const deleteGoods = async (id, actor) => {
 };
 
 /**
- * Return only ACTIVE goods — used by movement request module.
+ * Return only ACTIVE goods — used by movement request module and stock adjustments.
  */
 const listActiveGoods = async () => {
   return Goods.findAll({ where: { status: 'ACTIVE' }, order: [['name', 'ASC']] });
 };
 
-module.exports = { listGoods, getGoodsById, createGoods, updateGoods, deleteGoods, listActiveGoods };
+/**
+ * Return impact summary for a goods record — used for deactivation confirmation modal.
+ * Returns affected stock records and any active movement requests containing the goods.
+ * @param {number} id
+ */
+const getImpact = async (id) => {
+  const goods = await getGoodsById(id);
+
+  const stocks = await Stock.findAll({ where: { goodsId: id } });
+
+  const activeMovements = await MovementHeader.findAll({
+    where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+    include: [{
+      model: MovementDetail,
+      as: 'details',
+      where: { goodsId: id },
+      required: true,
+    }],
+    attributes: ['id', 'movementNumber', 'status'],
+  });
+
+  return {
+    goods: { id: goods.id, name: goods.name, productId: goods.productId, status: goods.status },
+    stocks: stocks.map((s) => ({ id: s.id, locationId: s.locationId, quantity: s.quantity })),
+    activeMovements: activeMovements.map((m) => ({
+      id: m.id,
+      movementNumber: m.movementNumber,
+      status: m.status,
+    })),
+  };
+};
+
+module.exports = { listGoods, getGoodsById, createGoods, updateGoods, deleteGoods, listActiveGoods, getImpact };

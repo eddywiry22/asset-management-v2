@@ -81,7 +81,7 @@ export default function MovementDetailPage() {
   const [successMsg, setSuccessMsg] = useState(null);
   const [showRejectModal, setShowRejectModal] = useState(false);
 
-  const canManage = user?.role === 'admin' || user?.role === 'manager';
+  const canManage = ['admin', 'warehouse_head', 'destination_operator'].includes(user?.role);
 
   const load = async () => {
     setIsLoading(true);

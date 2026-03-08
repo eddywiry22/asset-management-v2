@@ -53,3 +53,13 @@ export const deleteGoods = async (id) => {
   const { data } = await api.delete(`/goods/${id}`);
   return data;
 };
+
+/**
+ * Get impact summary for a goods record (affected stocks + active movements).
+ * Used for the deactivation confirmation modal.
+ * @param {number} id
+ */
+export const getGoodsImpact = async (id) => {
+  const { data } = await api.get(`/goods/${id}/impact`);
+  return data;
+};

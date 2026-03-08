@@ -55,4 +55,13 @@ const listActive = async (req, res, next) => {
   }
 };
 
-module.exports = { list, getById, create, update, remove, listActive };
+const getImpact = async (req, res, next) => {
+  try {
+    const impact = await goodsService.getImpact(req.params.id);
+    return success(res, impact, 'Goods impact retrieved');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { list, getById, create, update, remove, listActive, getImpact };
