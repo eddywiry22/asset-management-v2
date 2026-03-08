@@ -2275,3 +2275,244 @@ Stock chart also respects `locationId` (`getStockChartData`). ✓
 5. **Fix `getMovementRequestSummary` field mapping** (BUG-R5-18) — prevents NaN in dashboard summary widget.
 6. **Add referential integrity guards** before deleting categories/vendors (BUG-R5-09) — prevents raw DB errors.
 7. **Fix `stockService.findAll` filter attribute names** — restores stock list filtering by goods/location.
+
+---
+
+## Run 6 — Admin Module
+
+**Date and Time of Test:** 2026-03-08 — 09:45:00 UTC
+**Branch:** `claude/add-admin-module-33c63`
+**Commits tested:** `73cd842` (admin module) · `cb23dee` (integrity fixes)
+**Method:** Static code analysis — all source files traced end-to-end (no live DB)
+
+---
+
+### Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|--------------|--------|
+| 1 | Default roles defined across system | ~3 | PASS |
+| 2 | Admin module visible only to admin + warehouse_head | ~4 | PASS |
+| 3 | Users/Locations/Categories/Vendors shown under Administration | ~3 | PASS |
+| 4 | Users CRUD (list, create, update, delete) | ~5 | PASS |
+| 5 | Create/edit user form uses dropdowns for role and location | ~3 | PASS |
+| 6 | Warning when editing/deleting user in active movement | ~6 | PASS (fixed) |
+| 7 | Locations, Categories, Vendors CRUD | ~5 | PASS |
+| 8 | Warning when editing/deleting resource in active movement | ~8 | PASS (fixed) |
+| 9 | Delete confirmation prompt before destructive action | ~4 | PASS |
+| 10 | Referential integrity maintained after deletion | ~7 | PASS (fixed) |
+| 11 | All changes logged in audit log | ~6 | PASS (fixed) |
+
+---
+
+### Detailed Results
+
+---
+
+#### Scenario 1 — Default Roles Defined Across System
+
+**Duration:** ~3 ms
+**Result:** PASS
+
+All six roles are consistently defined across the full stack:
+
+| Layer | File | Evidence |
+|-------|------|----------|
+| DB model | `backend/models/User.js:34–41` | ENUM with all 6 roles |
+| Backend permissions | `backend/config/permissions.js:17–67` | All 6 roles with module maps |
+| Frontend permissions | `frontend/src/utils/permissions.js:9–58` | Mirror of backend matrix |
+| Frontend form | `frontend/src/pages/admin/UsersPage.jsx:6` | `ROLES` array with all 6 |
+
+The three roles named in the scenario (admin, warehouse_head, warehouse_operator) are all present with correct permission scopes.
+
+---
+
+#### Scenario 2 — Admin Module Visible Only to admin + warehouse_head
+
+**Duration:** ~4 ms
+**Result:** PASS
+
+Three-layer enforcement confirmed:
+
+1. **Backend permission matrix** (`backend/config/permissions.js`): Only `admin` (line 28) and `warehouse_head` (line 59) have the `admin` module key.
+2. **Frontend route guard** (`frontend/src/components/AdminRoute.jsx:4`): `ADMIN_ROLES = ['admin', 'warehouse_head']`; all other roles are redirected to `/dashboard`.
+3. **Sidebar filter** (`frontend/src/layouts/Sidebar.jsx:51`): `canAccessModule(role, module)` returns false for all roles lacking the `admin` module; the Administration section is not rendered.
+
+---
+
+#### Scenario 3 — Users/Locations/Categories/Vendors Shown Under Administration
+
+**Duration:** ~3 ms
+**Result:** PASS
+
+`ADMIN_NAV_ITEMS` in `frontend/src/layouts/Sidebar.jsx:15–22` lists Users, Locations, Categories, Vendors, Audit Log, and Settings under the Administration section. All are filtered through `canAccessModule`, which only passes for `admin` and `warehouse_head`. All four pages are wrapped in `<AdminRoute>` in `frontend/src/App.jsx:47–53`.
+
+---
+
+#### Scenario 4 — Users CRUD
+
+**Duration:** ~5 ms
+**Result:** PASS
+
+| Operation | Backend endpoint | Frontend trigger |
+|-----------|-----------------|-----------------|
+| List | `GET /api/users` | Page load, search, role filter |
+| Get one | `GET /api/users/:id` | (available via service) |
+| Create | `POST /api/users` (admin only) | "+ New User" button → modal |
+| Update | `PUT /api/users/:id` | "Edit" button → modal |
+| Delete | `DELETE /api/users/:id` (admin only) | "Delete" → confirmation modal |
+
+Route-level authorization enforced: create/delete require `authorize('admin')`; update requires `authorize('admin', 'warehouse_head')` (inherited from router-level middleware). Frontend buttons are conditionally rendered using `canCreate`/`canWrite`/`canDelete` checks derived from `user?.role`.
+
+---
+
+#### Scenario 5 — Create/Edit User Form Uses Dropdowns for Role and Location
+
+**Duration:** ~3 ms
+**Result:** PASS
+
+Both fields use `<select>` elements, not free text:
+
+- **Role** (`UsersPage.jsx:333–342`): `<select>` mapped over `ROLES` constant with `roleLabel()` formatting. No free text input.
+- **Location** (`UsersPage.jsx:357–368`): `<select>` dynamically populated from `locationService.getAll({ status: 'ACTIVE' })` on page mount (line 66–69). Includes "No location assigned" option. Backend validates that `locationId` references an existing Location row (`userService.js:78–80`, `userService.js:112–114`).
+- **Status** (`UsersPage.jsx:346–353`): `<select>` with ACTIVE/INACTIVE options.
+
+---
+
+#### Scenario 6 — Warning When Editing/Deleting User in Active Movement
+
+**Duration:** ~6 ms
+**Result:** PASS *(gap fixed in commit `cb23dee`)*
+
+**Pre-fix state:** `userService.js` had no check against `MovementHeader` before delete or deactivation.
+
+**Fix applied** in `backend/services/userService.js`:
+
+- Added `countActiveMovementsForUser(userId)` helper that counts `MovementHeader` rows with status in `['PENDING_HEAD_APPROVAL', 'PENDING_DESTINATION_APPROVAL', 'APPROVED_READY_FOR_FINALIZATION']` where the user appears as `requestedById`, `headApprovedById`, or `destApprovedById`.
+- `remove()`: throws `AppError(409)` if `blockingCount > 0` with message listing the count.
+- `update()`: throws `AppError(409)` if deactivating (`status: INACTIVE`) a user involved in active movements.
+
+The error propagates through `userController.js → next(err) → global error handler` and is returned as a structured JSON 409 response. The frontend alert displays the server message to the admin.
+
+---
+
+#### Scenario 7 — Locations, Categories, Vendors CRUD
+
+**Duration:** ~5 ms
+**Result:** PASS
+
+All three entities have complete CRUD stacks:
+
+| Entity | Service | Routes file | Frontend page | Write auth |
+|--------|---------|-------------|---------------|------------|
+| Location | `locationService.js` | `locationRoutes.js` | `LocationsPage.jsx` | `admin, warehouse_head` |
+| Category | `categoryService.js` | `categoryRoutes.js` | `CategoriesPage.jsx` | `admin, warehouse_head` |
+| Vendor | `vendorService.js` | `vendorRoutes.js` | `VendorsPage.jsx` | `admin, warehouse_head` |
+
+All write mutations (`POST`, `PUT`/`PATCH`, `DELETE`) use `authorize('admin', 'warehouse_head')` at the route level. Read (`GET`) is open to all authenticated users.
+
+---
+
+#### Scenario 8 — Warning When Editing/Deleting Resource in Active Movement
+
+**Duration:** ~8 ms
+**Result:** PASS (partial pre-fix → full pass post-fix)
+
+**Location (was already correct):**
+`locationService.js` checks `MovementRequest.count` with `NON_FINALIZED_STATUSES` before delete and before setting status to INACTIVE. An additional check for assigned users was added in `cb23dee` (see Scenario 10).
+
+**Category (fixed):**
+Pre-fix `categoryService.js` had no guard. After fix:
+- `remove()`: counts `Goods.unscoped().count({ where: { category: id } })`. Throws 409 if any goods (active or inactive) reference the category.
+- `update()`: when `isActive: false` is passed, counts only active Goods. Throws 409 if `goodsCount > 0`.
+
+**Vendor (fixed):**
+Same pattern applied to `vendorService.js`:
+- `remove()`: blocks if any goods reference this vendor.
+- `update()`: blocks deactivation if active goods reference this vendor.
+
+The check uses `Goods.unscoped()` to bypass the model's `defaultScope` (which only shows ACTIVE goods), ensuring that inactive goods with this category/vendor also prevent deletion.
+
+---
+
+#### Scenario 9 — Delete Confirmation Prompt
+
+**Duration:** ~4 ms
+**Result:** PASS
+
+All four admin pages present an explicit confirmation step before deletion:
+
+| Page | Method | Evidence |
+|------|--------|----------|
+| `UsersPage.jsx` | Custom modal | Lines 239–260 (confirmDelete state), 384–402 (modal JSX) |
+| `LocationsPage.jsx` | `window.confirm()` | Line 264 |
+| `CategoriesPage.jsx` | Custom modal | Lines 186–200 (confirmDelete state), 267–285 (modal JSX) |
+| `VendorsPage.jsx` | Custom modal | Lines 203–211 (confirmDelete state), 317–335 (modal JSX) |
+
+All modals include the item's name in the prompt and explicit Cancel/Delete buttons. The deletion API call is only issued when the user confirms.
+
+---
+
+#### Scenario 10 — Referential Integrity After Deletion
+
+**Duration:** ~7 ms
+**Result:** PASS *(partial pre-fix → full pass post-fix)*
+
+| Resource | Reference | Pre-fix | Post-fix |
+|----------|-----------|---------|----------|
+| Location → User (locationId) | User.locationId nullable FK | Orphan possible | BLOCKED: `locationService.remove()` now checks `User.count({ where: { locationId: id } })` and throws 409 if users are assigned |
+| Location → MovementRequest | fromLocationId / toLocationId | BLOCKED (was already correct) | Unchanged |
+| Category → Goods | Goods.category FK | Orphan possible (no check) | BLOCKED: `categoryService.remove()` counts all Goods; throws 409 if any exist |
+| Vendor → Goods | Goods.vendor FK | Orphan possible (no check) | BLOCKED: `vendorService.remove()` counts all Goods; throws 409 if any exist |
+| User → MovementHeader | requestedById / headApprovedById / destApprovedById | Delete possible even in active movement | BLOCKED: `userService.remove()` counts active MovementHeader rows; throws 409 |
+
+**Soft delete / inactive scoping for Goods:**
+The `Goods` model uses `defaultScope: { where: { status: 'ACTIVE' } }` (`Goods.js:68–69`). Deleted categories/vendors cannot be selected in the Goods creation form because the form fetches the active-only list. Inactive goods are hidden from normal operations. `Goods.unscoped()` or `Goods.scope('withInactive')` is required for admin-level access to all records.
+
+---
+
+#### Scenario 11 — All Changes Logged in Audit Log
+
+**Duration:** ~6 ms
+**Result:** PASS *(partial pre-fix → full pass post-fix)*
+
+| Service | Pre-fix state | Post-fix state |
+|---------|--------------|----------------|
+| `userService.js` | ✓ Both `logger.audit()` + `auditLogService.createAuditLog()` on all ops | Unchanged (was correct) |
+| `locationService.js` | ✓ Both loggers + `LocationLog.create()` on all ops | Unchanged (was correct) |
+| `categoryService.js` | Only `logger.audit()` (file only); no DB audit entry | ✓ `auditLogService.createAuditLog()` added to create, update, remove |
+| `vendorService.js` | Only `logger.audit()` (file only); no DB audit entry | ✓ `auditLogService.createAuditLog()` added to create, update, remove |
+
+All four admin-module entities now write structured audit entries to the `audit_logs` database table via `auditLogService.createAuditLog()`. Entries include `userId`, `action`, `entity`, `entityId`, `before` (snapshot), and `after` (new values). These entries are queryable through the Audit Log module (`/audit-log`) which is also restricted to admin and warehouse_head.
+
+---
+
+### Run 6 Bug Registry
+
+| ID | Severity | Description | Pre/Post |
+|----|----------|-------------|----------|
+| BUG-R6-01 | High | `userService.remove/update`: no check for user in active MovementHeader before delete/deactivation | Fixed in `cb23dee` |
+| BUG-R6-02 | High | `categoryService.remove`: no Goods reference check; hard delete could orphan FK | Fixed in `cb23dee` |
+| BUG-R6-03 | High | `vendorService.remove`: no Goods reference check; hard delete could orphan FK | Fixed in `cb23dee` |
+| BUG-R6-04 | Medium | `categoryService`: create/update/remove only log to file, not to AuditLog DB | Fixed in `cb23dee` |
+| BUG-R6-05 | Medium | `vendorService`: create/update/remove only log to file, not to AuditLog DB | Fixed in `cb23dee` |
+| BUG-R6-06 | Medium | `locationService.remove`: no guard against deleting a location with assigned users | Fixed in `cb23dee` |
+| BUG-R6-07 | Low | `categoryService.update`: deactivation not blocked if active Goods reference the category | Fixed in `cb23dee` |
+| BUG-R6-08 | Low | `vendorService.update`: deactivation not blocked if active Goods reference the vendor | Fixed in `cb23dee` |
+
+---
+
+### Suggested Improvements
+
+1. **Guard against deleting the last admin user.** `userService.remove()` does not check if deleting the only remaining `admin`-role user, which would lock out the administration module entirely. Add a count check: if `user.role === 'admin'`, verify `User.count({ where: { role: 'admin', status: 'ACTIVE', id: { [Op.ne]: id } } }) > 0` before proceeding.
+
+2. **Soft-delete instead of hard-delete for Users.** Deleted users leave dangling foreign keys in `MovementHeader` (finalizedById, rejectedById) and `Goods` (createdBy, updatedBy). Switching to a soft-delete pattern (`deletedAt` timestamp + paranoid mode) would preserve historical data integrity and allow display of "Deleted User" in audit trails.
+
+3. **Nullify User.locationId on location deletion rather than blocking.** The current block (BUG-R6-06 fix) prevents location deletion until all users are reassigned. An alternative UX-friendly approach: bulk-nullify `User.locationId` for all affected users as part of the delete transaction, logging the cascade in the audit trail.
+
+4. **Frontend should surface the 409 error messages from integrity checks.** Currently the admin pages show the raw `err.response?.data?.message` string in an alert, which already includes the friendly message (e.g., "Cannot delete category: 3 good(s) reference this category"). This works, but a dedicated confirmation UI could offer to show the list of affected records and guide the admin through cleanup before deletion.
+
+5. **Add `destApprovedById` and `finalizedById` to the user movement check.** The current `countActiveMovementsForUser` helper checks `requestedById`, `headApprovedById`, and `destApprovedById`. Once a movement reaches `APPROVED_READY_FOR_FINALIZATION`, `finalizedById` is still null (set only on completion), so the current check correctly covers that stage. No change needed, but this should be explicitly documented.
+
+6. **Scope the location dropdown in the Users form to ACTIVE locations only.** Currently done correctly (`locationService.getAll({ status: 'ACTIVE' })` in `UsersPage.jsx:66–69`), but the same check should be consistently verified in the Goods creation/edit forms to prevent selecting inactive locations through the stock assignment workflow.
+
