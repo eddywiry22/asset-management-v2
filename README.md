@@ -111,10 +111,20 @@ npm run seed
 
 | Email                         | Password        | Role                       | Assigned Location |
 |-------------------------------|-----------------|----------------------------|-------------------|
-| warehouse.admin@example.com   | Admin@1234      | `admin`                    | —                 |
-| warehouse.head@example.com    | Head@1234       | `warehouse_head`           | Warehouse A (origin) |
-| operator.one@example.com      | Operator@1234   | `warehouse_operator`       | Warehouse A (creates movement requests, origin-side) |
-| operator.two@example.com      | Operator@1234   | `warehouse_operator`       | Warehouse B (destination approver / finalizer for inbound movements) |
+| warehouse.admin@example.com             | Admin@1234      | `admin`                | Main Warehouse |
+| warehouse.head.main@example.com         | Head@1234       | `warehouse_head`       | Main Warehouse |
+| warehouse.head.secondary@example.com    | Head@1234       | `warehouse_head`       | Secondary Warehouse |
+| operator.one@example.com                | Operator@1234   | `warehouse_operator`   | Main Warehouse |
+| operator.two@example.com                | Operator@1234   | `warehouse_operator`   | Secondary Warehouse |
+
+
+### Seeder notes (canonical dataset)
+
+Current canonical seeders create:
+- 2 active locations: **Main Warehouse**, **Secondary Warehouse**
+- 7 active goods (`PROD-ELEC-001..004`, `PROD-OFFC-001..003`)
+- stock rows for **both** locations with quantity **30** for each seeded goods item
+- both warehouses have a `warehouse_head` and `warehouse_operator` account
 
 ### 4. Start the backend
 
