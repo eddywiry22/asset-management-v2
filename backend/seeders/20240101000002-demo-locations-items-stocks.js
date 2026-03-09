@@ -4,16 +4,17 @@ module.exports = {
   async up(queryInterface) {
     const now = new Date();
 
-    // ── Locations ────────────────────────────────────────────────────────────
     await queryInterface.bulkInsert('locations', [
-      { name: 'Warehouse A', code: 'WH-A', description: 'Main warehouse', isActive: true, createdAt: now, updatedAt: now },
-      { name: 'Warehouse B', code: 'WH-B', description: 'Secondary warehouse', isActive: true, createdAt: now, updatedAt: now },
-      { name: 'Warehouse C', code: 'WH-C', description: 'Overflow warehouse', isActive: true, createdAt: now, updatedAt: now },
-      { name: 'Store Front', code: 'SF-1', description: 'Retail store front', isActive: true, createdAt: now, updatedAt: now },
+      { name: 'Warehouse A', address: 'Main warehouse', status: 'ACTIVE', created_by: null, created_at: now, updated_at: now },
+      { name: 'Warehouse B', address: 'Secondary warehouse', status: 'ACTIVE', created_by: null, created_at: now, updated_at: now },
+      { name: 'Warehouse C', address: 'Overflow warehouse', status: 'ACTIVE', created_by: null, created_at: now, updated_at: now },
+      { name: 'Store Front', address: 'Retail store front', status: 'ACTIVE', created_by: null, created_at: now, updated_at: now },
     ]);
   },
 
   async down(queryInterface) {
-    await queryInterface.bulkDelete('locations', null, {});
+    await queryInterface.bulkDelete('locations', {
+      name: ['Warehouse A', 'Warehouse B', 'Warehouse C', 'Store Front'],
+    });
   },
 };
