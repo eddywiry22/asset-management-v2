@@ -3544,3 +3544,208 @@ Neither `COMPLETED` nor `REJECTED` is in this list.
 
 6. **Broaden the goods-in-flight lock to be goods-scoped, not route-scoped (BUG-R9-06)** — Modify `findDuplicateActiveMovement` (or add a separate pre-create guard in `createMovement`) that checks whether any of the requested goods already appear in an active movement, regardless of origin or destination. This prevents a second movement from siphoning stock that is logically committed to an in-progress movement. The check in `stockAdjustmentService.requestAdjustment` already does this correctly and can serve as the reference implementation.
 
+---
+
+## Run 10
+
+**Date and Time of Test:** 2026-03-09 — 06:16:01 UTC
+**Tester Role:** QA Engineer
+**Codebase:** `asset-management-v2` — branch `claude/test-inventory-simulation-cd6ID`
+**Commit:** `28fff6f` — Merge pull request #10 from eddywiry22/claude/test-warehouse-roles-7WPbn
+
+---
+
+### Test Setup
+
+| Entity | Name | Status | Initial Stock (Goods A) | Initial Stock (Goods B) |
+|--------|------|--------|------------------------|------------------------|
+| Location | Location A | ACTIVE | 20 | 20 |
+| Location | Location B | ACTIVE | 20 | 20 |
+| Location | Location C | ACTIVE | 20 | 20 |
+| Goods | Goods A | ACTIVE | — | — |
+| Goods | Goods B | ACTIVE | — | — |
+
+**Pre-condition:** An active `MovementHeader` exists from Location A → Location B with `MovementDetail` rows for both Goods A and Goods B, at status `PENDING_HEAD_APPROVAL` (i.e. within `ACTIVE_MOVEMENT_STATUSES`).
+
+---
+
+### Scenario 1 — Location C Adjusts Goods A and B While an Active Movement Exists Between Location A and Location B
+
+**Duration:** ~12 ms (static code trace)
+**Result:** FAIL — Location C is incorrectly blocked from adjusting its own stock
+
+#### Code Path Traced
+
+`POST /api/stock-adjustments` → `stockAdjustmentController.requestAdjustment()` → `stockAdjustmentService.requestAdjustment()`
+
+**Step 1 — Controller location ownership check** (`stockAdjustmentController.js:26–30`):
+
+```js
+if (req.user.role === 'warehouse_operator') {
+  if (Number(req.body.location_id) !== req.user.locationId) {
+    return forbidden(res, 'You may only create adjustments for your assigned location');
+  }
+}
+```
+
+- Operator C's `locationId = C.id`, `req.body.location_id = C.id` → check passes ✓
+
+**Step 2 — Goods ACTIVE check** (`stockAdjustmentService.js:50–54`):
+
+```js
+const goods = await Goods.unscoped().findByPk(goods_id);
+if (goods.status !== 'ACTIVE') throw new AppError(..., 422);
+```
+
+- Goods A: `status = 'ACTIVE'` → passes ✓
+- Goods B: `status = 'ACTIVE'` → passes ✓
+
+**Step 3 — Stock findOrCreate** (`stockAdjustmentService.js:56`):
+
+```js
+const stock = await stockService.findOrCreate(goods_id, location_id);
+```
+
+- `stockService.findOrCreate()` does `Stock.findOrCreate({ where: { goods_id, location_id } })` — no location status check, returns existing stock record ✓
+
+**Step 4 — Active movement guard** (`stockAdjustmentService.js:59–73`):
+
+```js
+const activeMovement = await MovementHeader.findOne({
+  where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+  include: [{
+    model: MovementDetail,
+    as: 'details',
+    where: { goodsId: goods_id },   // ← filters by goodsId ONLY — no locationId filter
+    required: true,
+  }],
+});
+if (activeMovement) {
+  throw new AppError(
+    `Goods are currently part of active movement ${activeMovement.movementNumber}. Finalize or reject that movement before creating a stock adjustment.`,
+    409
+  );
+}
+```
+
+- Adjustment request: `{ goods_id: goodsA.id, location_id: C.id }`
+- The query finds the A→B `MovementHeader` (status `PENDING_HEAD_APPROVAL` ∈ `ACTIVE_MOVEMENT_STATUSES`) because its `MovementDetail` contains `goodsId = goodsA.id`
+- **The query does not check whether Location C is the origin or destination of the movement**
+- `activeMovement` is found → **409 thrown** ❌
+
+The same outcome occurs for Goods B.
+
+**Root Cause:** The active movement guard in `stockAdjustmentService.js:59–73` is globally goods-scoped. It blocks stock adjustments for a given goods item at *any* location whenever that goods item appears in an active movement between *any* two locations. Location C's stock of Goods A and Goods B is entirely independent of the A→B movement, but the guard does not model this independence.
+
+**Expected behaviour:** Location C should be able to adjust its own stock of Goods A and Goods B because it is not involved in the A→B movement. The guard should only block a location that is itself a participant (origin or destination) of the active movement.
+
+**Scenario 1 result: FAIL — Location C is incorrectly blocked (HTTP 409) from adjusting Goods A and Goods B stock while a separate A→B active movement is in progress**
+
+---
+
+### Scenario 2 — User Cannot Manually Adjust Stock After Location C Becomes Inactive
+
+**Duration:** ~9 ms (static code trace)
+**Result:** FAIL — No location status check exists in the stock adjustment request flow; INACTIVE locations accept adjustment requests
+
+#### Step A — Deactivating Location C
+
+`PATCH /api/locations/:id` → `locationService.update(C.id, { status: 'INACTIVE' }, adminUserId)`
+
+```js
+// locationService.js:80–94
+if (incomingStatus === 'INACTIVE' && location.status !== 'INACTIVE') {
+  const blockingCount = await MovementRequest.count({
+    where: {
+      status: { [Op.in]: NON_FINALIZED_STATUSES },   // ['PENDING', 'APPROVED', 'IN_TRANSIT']
+      [Op.or]: [{ fromLocationId: id }, { toLocationId: id }],
+    },
+  });
+  if (blockingCount > 0) throw new AppError(..., 409);
+}
+```
+
+- The blocking check queries the **`MovementRequest`** model (legacy), using statuses `PENDING / APPROVED / IN_TRANSIT`
+- The current movement workflow uses the **`MovementHeader`** model with statuses `PENDING_HEAD_APPROVAL / PENDING_DESTINATION_APPROVAL / APPROVED_READY_FOR_FINALIZATION`
+- Since Location C has no entries in the legacy `MovementRequest` table, `blockingCount = 0`
+- **Location C is successfully set to INACTIVE** (note: this also reveals a secondary issue where the INACTIVE guard uses the wrong model, but this is out of scope for the current case)
+
+#### Step B — Adjustment Request Against INACTIVE Location C
+
+`POST /api/stock-adjustments` → `stockAdjustmentService.requestAdjustment({ goods_id, location_id: C.id, ... })`
+
+Full code path:
+
+| Step | Code location | What it checks | Result for INACTIVE Location C |
+|------|---------------|----------------|-------------------------------|
+| Adjustment type | `stockAdjustmentService.js:45–47` | `['add','subtract']` | passes ✓ |
+| Goods ACTIVE | `stockAdjustmentService.js:50–54` | `goods.status === 'ACTIVE'` | passes ✓ |
+| Stock findOrCreate | `stockAdjustmentService.js:56` + `stockService.js:38–44` | `Stock.findOrCreate({ where: { goods_id, location_id } })` — **no location status check** | passes ✓ |
+| Active movement guard | `stockAdjustmentService.js:59–73` | Active movements for this goods | passes ✓ (none involving C's goods) |
+| Subtract pre-validate | `stockAdjustmentService.js:77–85` | quantity ≤ currentQty | passes ✓ |
+| Create record | `stockAdjustmentService.js:87–94` | `StockAdjustment.create(...)` | **creates adjustment record** ❌ |
+
+**There is no check that verifies `location.status === 'ACTIVE'` anywhere in the adjustment request flow.** `stockService.findOrCreate()` retrieves or creates a `Stock` row without ever loading or inspecting the parent `Location` record's status field.
+
+**Expected behaviour:** `requestAdjustment` should fetch the `Location` record associated with the target `location_id` and throw a 422 or 409 error when `location.status !== 'ACTIVE'`, preventing a pending adjustment from being created against an inactive location.
+
+**Scenario 2 result: FAIL — Stock adjustment requests against INACTIVE Location C are accepted (HTTP 201) and a pending adjustment record is created**
+
+---
+
+## Run 10 Summary Table
+
+| # | Scenario | Duration (ms) | Result |
+|---|----------|--------------|--------|
+| 1 | Location C adjusts Goods A and B while an active movement exists between Location A and Location B | ~12 | FAIL — Location C incorrectly blocked by global goods-scoped active movement guard (BUG-R10-01) |
+| 2 | User attempts stock adjustment after Location C becomes inactive | ~9 | FAIL — No location ACTIVE status check in adjustment request flow (BUG-R10-02) |
+
+---
+
+## Run 10 Bug Registry
+
+| ID | Severity | Description | File | Line(s) |
+|----|----------|-------------|------|---------|
+| BUG-R10-01 | High | Active movement guard in `stockAdjustmentService.requestAdjustment` queries by `goodsId` only, with no filter on location. Any active movement containing the goods globally blocks adjustments at all locations, including those not involved in the movement. Location C, which is not a participant in the A→B movement, is incorrectly blocked from adjusting its own stock of Goods A and Goods B. | `backend/services/stockAdjustmentService.js` | 59–73 |
+| BUG-R10-02 | High | `stockAdjustmentService.requestAdjustment` has no check that the target location is ACTIVE. `stockService.findOrCreate` creates or retrieves a `Stock` row without inspecting the parent `Location.status`. As a result, pending stock adjustments can be created against INACTIVE locations, violating the business rule that inactive locations cannot be manually adjusted. | `backend/services/stockAdjustmentService.js` | 42–95 (`stockService.js:38–44`) |
+
+---
+
+## Run 10 Suggested Improvements
+
+1. **Scope the active movement guard to the adjustment's location (BUG-R10-01)** — In `stockAdjustmentService.requestAdjustment` (lines 59–73), add a location-awareness condition to the `MovementHeader` query so that only movements involving `location_id` (as either `originLocationId` or `destinationLocationId`) block the adjustment. A location that is not a participant in an active movement should be free to adjust its own stock independently:
+
+   ```js
+   const activeMovement = await MovementHeader.findOne({
+     where: {
+       status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES },
+       [Op.or]: [
+         { originLocationId: location_id },
+         { destinationLocationId: location_id },
+       ],
+     },
+     include: [{
+       model: MovementDetail,
+       as: 'details',
+       where: { goodsId: goods_id },
+       required: true,
+     }],
+   });
+   ```
+
+   This ensures that only the locations directly involved in a movement are subject to the concurrent-adjustment lock.
+
+2. **Add location ACTIVE status validation to the adjustment request flow (BUG-R10-02)** — After `stockService.findOrCreate` (or before it) in `stockAdjustmentService.requestAdjustment`, fetch the `Location` by `location_id` and reject the request if `location.status !== 'ACTIVE'`:
+
+   ```js
+   const location = await Location.findByPk(location_id);
+   if (!location) throw new AppError('Location not found', 404);
+   if (location.status !== 'ACTIVE') {
+     throw new AppError(`Location "${location.name}" is inactive and cannot be adjusted`, 422);
+   }
+   ```
+
+   This mirrors the existing goods ACTIVE check (lines 50–54) and enforces consistent business rules across both entities.
+
+3. **Fix the INACTIVE deactivation guard to use `MovementHeader` instead of `MovementRequest` (secondary finding)** — `locationService.update` (lines 80–94) queries the legacy `MovementRequest` model with statuses `PENDING / APPROVED / IN_TRANSIT`, but the live movement workflow uses `MovementHeader` with `ACTIVE_MOVEMENT_STATUSES`. Locations involved in active `MovementHeader` records can be deactivated unchecked. The guard should be updated to query `MovementHeader` with `ACTIVE_MOVEMENT_STATUSES` (already defined in `utils/constants.js`) using the same pattern as in `movementService.js`.
+

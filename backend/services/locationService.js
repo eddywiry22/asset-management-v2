@@ -1,11 +1,9 @@
 const { Op } = require('sequelize');
-const { Location, LocationLog, MovementRequest, User } = require('../models');
+const { Location, LocationLog, MovementHeader, User } = require('../models');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
 const auditLogService = require('./auditLogService');
-
-/** Statuses that indicate a movement request is not yet finalized */
-const NON_FINALIZED_STATUSES = ['PENDING', 'APPROVED', 'IN_TRANSIT'];
+const { ACTIVE_MOVEMENT_STATUSES } = require('../utils/constants');
 
 /**
  * Return all locations, optionally filtered by status.
@@ -64,8 +62,8 @@ const create = async (data, performedBy) => {
 
 /**
  * Update a location and write an audit log entry.
- * Enforces the rule: cannot set status to INACTIVE when non-finalized
- * movement requests reference this location.
+ * Enforces the rule: cannot set status to INACTIVE when active
+ * movement headers reference this location.
  * @param {number} id
  * @param {{ name?: string, address?: string, status?: string }} data
  * @param {number} performedBy - User ID of the actor
@@ -76,18 +74,18 @@ const update = async (id, data, performedBy) => {
 
   const incomingStatus = data.status ? data.status.toUpperCase() : undefined;
 
-  // Enforce INACTIVE restriction
+  // Enforce INACTIVE restriction — block if any active MovementHeader involves this location
   if (incomingStatus === 'INACTIVE' && location.status !== 'INACTIVE') {
-    const blockingCount = await MovementRequest.count({
+    const blockingCount = await MovementHeader.count({
       where: {
-        status: { [Op.in]: NON_FINALIZED_STATUSES },
-        [Op.or]: [{ fromLocationId: id }, { toLocationId: id }],
+        status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES },
+        [Op.or]: [{ originLocationId: id }, { destinationLocationId: id }],
       },
     });
 
     if (blockingCount > 0) {
       throw new AppError(
-        `Cannot set location to INACTIVE: ${blockingCount} non-finalized movement request(s) involve this location.`,
+        `Cannot set location to INACTIVE: ${blockingCount} active movement(s) involve this location.`,
         409
       );
     }
@@ -142,10 +140,10 @@ const getImpact = async (id) => {
   if (!location) throw new AppError('Location not found', 404);
 
   const [blockingMovements, assignedUsers] = await Promise.all([
-    MovementRequest.count({
+    MovementHeader.count({
       where: {
-        status: { [Op.in]: NON_FINALIZED_STATUSES },
-        [Op.or]: [{ fromLocationId: id }, { toLocationId: id }],
+        status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES },
+        [Op.or]: [{ originLocationId: id }, { destinationLocationId: id }],
       },
     }),
     User.count({ where: { locationId: id } }),
@@ -165,17 +163,17 @@ const remove = async (id, performedBy) => {
   const location = await Location.findByPk(id);
   if (!location) throw new AppError('Location not found', 404);
 
-  // Block deletion if non-finalized movement requests reference this location
-  const blockingMovements = await MovementRequest.count({
+  // Block deletion if any active MovementHeader references this location
+  const blockingMovements = await MovementHeader.count({
     where: {
-      status: { [Op.in]: NON_FINALIZED_STATUSES },
-      [Op.or]: [{ fromLocationId: id }, { toLocationId: id }],
+      status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES },
+      [Op.or]: [{ originLocationId: id }, { destinationLocationId: id }],
     },
   });
 
   if (blockingMovements > 0) {
     throw new AppError(
-      `Cannot delete location: ${blockingMovements} non-finalized movement request(s) involve this location.`,
+      `Cannot delete location: ${blockingMovements} active movement(s) involve this location.`,
       409
     );
   }

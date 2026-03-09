@@ -3,7 +3,7 @@
 /**
  * Warehouse Operator Workflow — Unit Test Suite
  *
- * Covers the 8 scenarios from simulation-test.md:
+ * Covers the 9 scenarios from simulation-test.md:
  *  1. Warehouse operator creates movement request
  *  2. Warehouse head approves request
  *  3. Destination warehouse operator approves request
@@ -12,6 +12,7 @@
  *  6. Duplicate movement request attempted
  *  7. User with inactive status attempts login
  *  8. Goods with inactive status attempted selection
+ *  9. Cross-location stock adjustment independence
  *
  * All database interactions are mocked so no live DB connection is required.
  */
@@ -62,10 +63,18 @@ jest.mock('../models', () => {
     Location: makeModel(),
     Goods: makeModel(),
     Stock: makeModel(),
+    StockAdjustment: makeModel(),
     User: makeModel(),
     AuditLog: makeModel(),
   };
 });
+
+// ---------------------------------------------------------------------------
+// Mock: ../services/stockService — used by stockAdjustmentService.requestAdjustment
+// ---------------------------------------------------------------------------
+jest.mock('../services/stockService', () => ({
+  findOrCreate: jest.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Mock: bcrypt — speed up hash comparisons in unit tests
@@ -100,6 +109,8 @@ jest.mock('../config/jwt', () => ({
 // ---------------------------------------------------------------------------
 const movementService = require('../services/movementService');
 const authService = require('../services/authService');
+const stockAdjustmentService = require('../services/stockAdjustmentService');
+const stockService = require('../services/stockService');
 const {
   sequelize,
   MovementHeader,
@@ -107,6 +118,7 @@ const {
   Location,
   Goods,
   Stock,
+  StockAdjustment,
   User,
 } = require('../models');
 const bcrypt = require('bcrypt');
@@ -866,5 +878,433 @@ describe('Scenario 8 — Goods with Inactive Status Attempted Selection', () => 
     await expect(movementService.createMovement(operatorId, data)).rejects.toMatchObject({
       statusCode: 404,
     });
+  });
+});
+
+// ===========================================================================
+// Scenario 9 — Cross-Location Stock Adjustment Independence
+//
+// Workflow under test:
+//   A user submits a stock adjustment request at Location A for Goods A.
+//   Meanwhile, a user at Location B must be able to submit a stock adjustment
+//   for the same Goods A at Location B without being blocked.
+//
+// Key design rule (BUG-R10-01):
+//   The active-movement guard in requestAdjustment is location-scoped. It
+//   only blocks a location that is a *participant* (origin or destination) in
+//   an active MovementHeader containing the requested goods. Uninvolved
+//   locations are never blocked.
+//
+// Note on pending stock adjustments:
+//   A pending stock adjustment at Location A does NOT create a MovementHeader.
+//   The guard exclusively queries MovementHeader, so a pending adjustment at
+//   Location A has zero effect on Location B's ability to adjust.
+// ===========================================================================
+describe('Scenario 9 — Cross-Location Stock Adjustment Independence', () => {
+  // Shared fixtures
+  const GOODS_A_ID     = 10;
+  const LOCATION_A_ID  = 1;
+  const LOCATION_B_ID  = 2;
+  const LOCATION_C_ID  = 3;
+  const USER_A_ID      = 5;
+  const USER_B_ID      = 6;
+
+  const goodsA    = { id: GOODS_A_ID, name: 'Goods A', productId: 'GA-001', status: 'ACTIVE' };
+  const locationA = { id: LOCATION_A_ID, name: 'Warehouse A', status: 'ACTIVE' };
+  const locationB = { id: LOCATION_B_ID, name: 'Warehouse B', status: 'ACTIVE' };
+
+  const stockAtA = {
+    id: 100, goodsId: GOODS_A_ID, locationId: LOCATION_A_ID, quantity: 80,
+    update: jest.fn(async function (d) { Object.assign(this, d); return this; }),
+  };
+  const stockAtB = {
+    id: 200, goodsId: GOODS_A_ID, locationId: LOCATION_B_ID, quantity: 50,
+    update: jest.fn(async function (d) { Object.assign(this, d); return this; }),
+  };
+
+  /** Shared happy-path setup — both goods and both locations are ACTIVE. */
+  const setupBaseHappyPath = () => {
+    Goods.unscoped.mockReturnValue(Goods);
+    Goods.findByPk.mockResolvedValue(goodsA);
+  };
+
+  // -------------------------------------------------------------------------
+  // 9-A: Pending adjustment at Location A does NOT block Location B
+  // -------------------------------------------------------------------------
+  describe('9-A — Pending adjustment at Location A does not block Location B', () => {
+    beforeEach(() => {
+      setupBaseHappyPath();
+    });
+
+    test('Location B adjustment succeeds even when Location A has a pending adjustment for the same goods', async () => {
+      // Location A already has a PENDING stock adjustment for Goods A.
+      // This is pure application state — there is NO active MovementHeader
+      // created by a stock adjustment; the guard only queries MovementHeader.
+
+      // Location B setup
+      Location.findByPk.mockResolvedValueOnce(locationB);
+      stockService.findOrCreate.mockResolvedValueOnce(stockAtB);
+
+      // No active MovementHeader involves Location B for Goods A
+      MovementHeader.findOne.mockResolvedValueOnce(null);
+
+      StockAdjustment.create.mockResolvedValueOnce({
+        id: 201,
+        stock_id: stockAtB.id,
+        adjustment_type: 'add',
+        quantity: 10,
+        status: 'pending',
+        requested_by: USER_B_ID,
+      });
+
+      const result = await stockAdjustmentService.requestAdjustment(
+        { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'add', quantity: 10, reason: 'Restock' },
+        USER_B_ID
+      );
+
+      expect(result).toBeDefined();
+      expect(result.status).toBe('pending');
+      expect(StockAdjustment.create).toHaveBeenCalledWith(
+        expect.objectContaining({ stock_id: stockAtB.id, adjustment_type: 'add', quantity: 10 })
+      );
+    });
+
+    test('Location A adjustment is created successfully and returns pending status', async () => {
+      // Establish the state: Location A requests an adjustment for Goods A.
+      Location.findByPk.mockResolvedValueOnce(locationA);
+      stockService.findOrCreate.mockResolvedValueOnce(stockAtA);
+
+      // No active MovementHeader involving Location A for Goods A
+      MovementHeader.findOne.mockResolvedValueOnce(null);
+
+      StockAdjustment.create.mockResolvedValueOnce({
+        id: 101,
+        stock_id: stockAtA.id,
+        adjustment_type: 'subtract',
+        quantity: 20,
+        status: 'pending',
+        requested_by: USER_A_ID,
+      });
+
+      const result = await stockAdjustmentService.requestAdjustment(
+        { goods_id: GOODS_A_ID, location_id: LOCATION_A_ID, adjustment_type: 'subtract', quantity: 20, reason: 'Correction' },
+        USER_A_ID
+      );
+
+      expect(result.status).toBe('pending');
+      expect(StockAdjustment.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 9-B: Active MovementHeader (A → C) blocks A and C but NOT B
+  // -------------------------------------------------------------------------
+  describe('9-B — Active movement between Location A and C blocks only those locations', () => {
+    // An active movement exists: origin=A, destination=C, containing Goods A.
+    const activeMovementAtoC = {
+      id: 50,
+      movementNumber: 'MV-202603-00050',
+      originLocationId: LOCATION_A_ID,
+      destinationLocationId: LOCATION_C_ID,
+      status: 'PENDING_HEAD_APPROVAL',
+    };
+
+    beforeEach(() => {
+      setupBaseHappyPath();
+    });
+
+    test('Location B (uninvolved) can adjust Goods A while the A→C movement is active', async () => {
+      Location.findByPk.mockResolvedValueOnce(locationB);
+      stockService.findOrCreate.mockResolvedValueOnce(stockAtB);
+
+      // MovementHeader.findOne for Location B returns null — B is not in the A→C movement
+      MovementHeader.findOne.mockResolvedValueOnce(null);
+
+      StockAdjustment.create.mockResolvedValueOnce({
+        id: 202,
+        stock_id: stockAtB.id,
+        adjustment_type: 'add',
+        quantity: 5,
+        status: 'pending',
+        requested_by: USER_B_ID,
+      });
+
+      const result = await stockAdjustmentService.requestAdjustment(
+        { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'add', quantity: 5, reason: 'Cycle count' },
+        USER_B_ID
+      );
+
+      expect(result).toBeDefined();
+      expect(result.status).toBe('pending');
+      // Guard must have been invoked exactly once (for Location B)
+      expect(MovementHeader.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    test('Location A (origin of active movement) is blocked from adjusting Goods A', async () => {
+      Location.findByPk.mockResolvedValueOnce(locationA);
+      stockService.findOrCreate.mockResolvedValueOnce(stockAtA);
+
+      // MovementHeader.findOne for Location A returns the active A→C movement
+      MovementHeader.findOne.mockResolvedValueOnce(activeMovementAtoC);
+
+      await expect(
+        stockAdjustmentService.requestAdjustment(
+          { goods_id: GOODS_A_ID, location_id: LOCATION_A_ID, adjustment_type: 'add', quantity: 5, reason: 'Correction' },
+          USER_A_ID
+        )
+      ).rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    test('the 409 error references the blocking movement number', async () => {
+      Location.findByPk.mockResolvedValueOnce(locationA);
+      stockService.findOrCreate.mockResolvedValueOnce(stockAtA);
+      MovementHeader.findOne.mockResolvedValueOnce(activeMovementAtoC);
+
+      await expect(
+        stockAdjustmentService.requestAdjustment(
+          { goods_id: GOODS_A_ID, location_id: LOCATION_A_ID, adjustment_type: 'subtract', quantity: 5, reason: 'Test' },
+          USER_A_ID
+        )
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        message: expect.stringContaining(activeMovementAtoC.movementNumber),
+      });
+    });
+
+    test('Location B adjustment does not trigger the active-movement guard for Location A', async () => {
+      // Even if Location A is fully blocked, the guard query for Location B
+      // must use Location B's ID — verified by checking the findOne call args.
+      Location.findByPk.mockResolvedValueOnce(locationB);
+      stockService.findOrCreate.mockResolvedValueOnce(stockAtB);
+      MovementHeader.findOne.mockResolvedValueOnce(null); // no movement involves B
+
+      StockAdjustment.create.mockResolvedValueOnce({
+        id: 203, stock_id: stockAtB.id, adjustment_type: 'add', quantity: 3, status: 'pending', requested_by: USER_B_ID,
+      });
+
+      await stockAdjustmentService.requestAdjustment(
+        { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'add', quantity: 3, reason: 'Top-up' },
+        USER_B_ID
+      );
+
+      // The findOne call must have filtered on LOCATION_B_ID, not LOCATION_A_ID
+      const findOneCall = MovementHeader.findOne.mock.calls[0][0];
+      const orClause = findOneCall.where[Object.getOwnPropertySymbols(findOneCall.where).find(s => s.toString() === 'Symbol(or)')];
+      expect(orClause).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ originLocationId: LOCATION_B_ID }),
+          expect.objectContaining({ destinationLocationId: LOCATION_B_ID }),
+        ])
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 9-C: Validation failures — inactive location / inactive goods
+  // -------------------------------------------------------------------------
+  describe('9-C — Pre-guard validation: inactive location or goods blocks early', () => {
+    beforeEach(() => {
+      Goods.unscoped.mockReturnValue(Goods);
+    });
+
+    test('rejects with 422 when the target location is INACTIVE (BUG-R10-02)', async () => {
+      Goods.findByPk.mockResolvedValueOnce(goodsA);
+      Location.findByPk.mockResolvedValueOnce({ id: LOCATION_B_ID, name: 'Warehouse B', status: 'INACTIVE' });
+
+      await expect(
+        stockAdjustmentService.requestAdjustment(
+          { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'add', quantity: 5, reason: 'Test' },
+          USER_B_ID
+        )
+      ).rejects.toMatchObject({ statusCode: 422 });
+    });
+
+    test('inactive-location check fires before the active-movement guard — findOne is never called', async () => {
+      Goods.findByPk.mockResolvedValueOnce(goodsA);
+      Location.findByPk.mockResolvedValueOnce({ id: LOCATION_B_ID, name: 'Warehouse B', status: 'INACTIVE' });
+
+      await expect(
+        stockAdjustmentService.requestAdjustment(
+          { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'add', quantity: 5, reason: 'Test' },
+          USER_B_ID
+        )
+      ).rejects.toMatchObject({ statusCode: 422 });
+
+      // Guard must never have been reached
+      expect(MovementHeader.findOne).not.toHaveBeenCalled();
+    });
+
+    test('rejects with 422 when goods is INACTIVE', async () => {
+      Goods.findByPk.mockResolvedValueOnce({ ...goodsA, status: 'INACTIVE' });
+
+      await expect(
+        stockAdjustmentService.requestAdjustment(
+          { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'add', quantity: 5, reason: 'Test' },
+          USER_B_ID
+        )
+      ).rejects.toMatchObject({ statusCode: 422 });
+    });
+
+    test('rejects with 422 for unsupported adjustment type', async () => {
+      await expect(
+        stockAdjustmentService.requestAdjustment(
+          { goods_id: GOODS_A_ID, location_id: LOCATION_B_ID, adjustment_type: 'set', quantity: 50, reason: 'Legacy' },
+          USER_B_ID
+        )
+      ).rejects.toMatchObject({ statusCode: 422 });
+
+      // Neither goods, location, nor movement guard should have been consulted
+      expect(Goods.findByPk).not.toHaveBeenCalled();
+      expect(MovementHeader.findOne).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ===========================================================================
+// Scenario 10 — Movement Creation Blocked by Pending Stock Adjustment
+//
+// Workflow:
+//   1. A user creates a stock adjustment request at Location A for Goods A
+//      (status = 'pending' — not yet approved or rejected).
+//   2. A user from Location B attempts to create a movement from B → A that
+//      includes Goods A.
+//   3. The movement must be BLOCKED (HTTP 409) because Location A has a
+//      pending adjustment for Goods A that has not been resolved.
+//
+// Implementation: findPendingAdjustmentForGoods() queries StockAdjustment
+//   where status='pending', joining Stock filtered to the requested goodsIds
+//   and locationId IN [originLocationId, destinationLocationId]. This is the
+//   third guard inside the createMovement transaction, executed after the
+//   route-scoped duplicate check and the goods-scoped in-flight lock.
+//
+// Both directions are blocked: a pending adjustment at the origin location
+// is equally dangerous (the adjustment may change the stock that the
+// movement is about to deduct), so the guard covers origin AND destination.
+// ===========================================================================
+describe('Scenario 10 — Movement Creation Blocked by Pending Stock Adjustment', () => {
+  const GOODS_A_ID    = 10;
+  const LOCATION_A_ID = 1;   // destination of the movement / location with pending adjustment
+  const LOCATION_B_ID = 2;   // origin of the movement
+  const USER_B_ID     = 6;
+
+  const goodsA    = { id: GOODS_A_ID, name: 'Goods A', productId: 'GA-001', status: 'ACTIVE' };
+  const locationA = { id: LOCATION_A_ID, name: 'Warehouse A', status: 'ACTIVE' };
+  const locationB = { id: LOCATION_B_ID, name: 'Warehouse B', status: 'ACTIVE' };
+
+  // Pending adjustment record — only the fields the guard cares about
+  const pendingAdjAtA = {
+    id: 55,
+    status: 'pending',
+    stock: { goodsId: GOODS_A_ID, locationId: LOCATION_A_ID },
+  };
+  const pendingAdjAtB = {
+    id: 56,
+    status: 'pending',
+    stock: { goodsId: GOODS_A_ID, locationId: LOCATION_B_ID },
+  };
+
+  /** Wire all createMovement pre-checks so we reach the three guards inside the transaction. */
+  const setupMovementPrechecks = () => {
+    Location.findByPk
+      .mockResolvedValueOnce(locationB)   // origin location check
+      .mockResolvedValueOnce(locationA);  // destination location check
+
+    Goods.unscoped.mockReturnValue(Goods);
+    Goods.findByPk.mockResolvedValue(goodsA);
+
+    Stock.findOne
+      .mockResolvedValueOnce({ quantity: 100 })  // origin qty check inside loop
+      .mockResolvedValueOnce({ quantity: 20 });  // dest stock exists check
+
+    MovementHeader.count.mockResolvedValue(1);  // movement number generation
+    MovementHeader.findAll.mockResolvedValue([]); // no route-scoped duplicate
+    MovementHeader.findOne.mockResolvedValue(null); // no in-flight goods lock
+  };
+
+  test('blocks (409) when destination Location A has a pending adjustment for Goods A', async () => {
+    setupMovementPrechecks();
+
+    // Pending adjustment at Location A is found by the new guard
+    StockAdjustment.findOne.mockResolvedValueOnce(pendingAdjAtA);
+
+    await expect(
+      movementService.createMovement(USER_B_ID, {
+        originLocationId: LOCATION_B_ID,
+        destinationLocationId: LOCATION_A_ID,
+        items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test('blocks (409) when origin Location B has a pending adjustment for Goods A', async () => {
+    setupMovementPrechecks();
+
+    // Pending adjustment at origin Location B — equally dangerous: the
+    // adjustment may change the stock that the movement is about to deduct.
+    StockAdjustment.findOne.mockResolvedValueOnce(pendingAdjAtB);
+
+    await expect(
+      movementService.createMovement(USER_B_ID, {
+        originLocationId: LOCATION_B_ID,
+        destinationLocationId: LOCATION_A_ID,
+        items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test('proceeds when no pending adjustment exists at either location', async () => {
+    setupMovementPrechecks();
+
+    // No pending adjustment at origin or destination
+    StockAdjustment.findOne.mockResolvedValueOnce(null);
+
+    const createdHeader = {
+      id: 1,
+      movementNumber: 'MV-202603-00001',
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      status: 'PENDING_HEAD_APPROVAL',
+      update: jest.fn(),
+    };
+    MovementHeader.create.mockResolvedValue(createdHeader);
+    MovementDetail.bulkCreate.mockResolvedValue([]);
+
+    const { movement } = await movementService.createMovement(USER_B_ID, {
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+    });
+
+    expect(movement).toBeDefined();
+    expect(movement.status).toBe('PENDING_HEAD_APPROVAL');
+  });
+
+  test('pending adjustment guard is called with both location IDs', async () => {
+    setupMovementPrechecks();
+    StockAdjustment.findOne.mockResolvedValueOnce(null);
+
+    const createdHeader = {
+      id: 1, movementNumber: 'MV-202603-00001',
+      originLocationId: LOCATION_B_ID, destinationLocationId: LOCATION_A_ID,
+      status: 'PENDING_HEAD_APPROVAL', update: jest.fn(),
+    };
+    MovementHeader.create.mockResolvedValue(createdHeader);
+    MovementDetail.bulkCreate.mockResolvedValue([]);
+
+    await movementService.createMovement(USER_B_ID, {
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+    });
+
+    // Verify the guard was called and its Stock include filters on both locations
+    expect(StockAdjustment.findOne).toHaveBeenCalledTimes(1);
+    const callArg = StockAdjustment.findOne.mock.calls[0][0];
+    expect(callArg.where).toMatchObject({ status: 'pending' });
+    const stockInclude = callArg.include.find((i) => i.as === 'stock');
+    const inSymbol = Object.getOwnPropertySymbols(stockInclude.where.locationId)[0];
+    expect(stockInclude.where.locationId[inSymbol]).toEqual(
+      expect.arrayContaining([LOCATION_A_ID, LOCATION_B_ID])
+    );
   });
 });

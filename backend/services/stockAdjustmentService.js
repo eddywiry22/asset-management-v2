@@ -53,11 +53,27 @@ const requestAdjustment = async ({ goods_id, location_id, adjustment_type, quant
     throw new AppError(`Goods "${goods.name}" is inactive and cannot be adjusted`, 422);
   }
 
+  // Validate location exists and is ACTIVE before proceeding (BUG-R10-02)
+  const location = await Location.findByPk(location_id);
+  if (!location) throw new AppError('Location not found', 404);
+  if (location.status !== 'ACTIVE') {
+    throw new AppError(`Location "${location.name}" is inactive and cannot be adjusted`, 422);
+  }
+
   const stock = await stockService.findOrCreate(goods_id, location_id);
 
-  // Warn if goods at this location are part of an active movement (BUG-R7-05)
+  // Block adjustment if this location is a participant in an active movement that
+  // involves these goods (BUG-R7-05, BUG-R10-01).
+  // The location filter is intentional: a movement between Location A and B must
+  // not prevent Location C from adjusting its own independent stock of the same goods.
   const activeMovement = await MovementHeader.findOne({
-    where: { status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES } },
+    where: {
+      status: { [Op.in]: ACTIVE_MOVEMENT_STATUSES },
+      [Op.or]: [
+        { originLocationId: location_id },
+        { destinationLocationId: location_id },
+      ],
+    },
     include: [{
       model: MovementDetail,
       as: 'details',

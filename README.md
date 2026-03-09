@@ -208,7 +208,22 @@ docker-compose up --build
 | GET    | `/api/stock-adjustments` | Yes           | List adjustments        |
 | POST   | `/api/stock-adjustments` | Admin/Head    | Create stock adjustment |
 
+**Validation rules for `POST /api/stock-adjustments`:**
+- `adjustment_type` must be `add` or `subtract` (the `set` type is not supported)
+- Target **goods** must have `status = ACTIVE` — returns HTTP 422 otherwise
+- Target **location** must have `status = ACTIVE` — returns HTTP 422 otherwise
+- If the target location is a direct participant (origin or destination) of an active movement that contains the requested goods, the request is blocked with HTTP 409. Locations that are **not** involved in that movement are unaffected and may adjust their own stock freely.
+- `warehouse_operator` may only submit adjustments for their own assigned location
+
 ### Movements
+
+**Validation rules for `POST /api/movements`:**
+- Origin and destination locations must differ
+- All requested goods must be `ACTIVE`
+- Origin location must have sufficient stock for each goods item
+- No active `MovementHeader` may already contain any of the requested goods (goods-scoped in-flight lock — HTTP 409)
+- No duplicate active movement may exist for the same origin, destination, and goods set (route-scoped duplicate check — HTTP 409)
+- No `pending` `StockAdjustment` may exist at the origin **or** destination location for any of the requested goods (pending adjustment lock — HTTP 409). The adjustment must be approved or rejected before the movement can be created.
 
 | Method | Endpoint                              | Auth required                    | Description                                              |
 |--------|---------------------------------------|----------------------------------|----------------------------------------------------------|
@@ -362,6 +377,9 @@ Tests mock all Sequelize models and services, so no live database is required. K
 - Post-approval recall at `APPROVED_READY_FOR_FINALIZATION`
 - Inactive user / inactive goods rejection
 - Duplicate request prevention and goods-scoped in-flight lock
+- Stock adjustment blocked when target location is `INACTIVE` (HTTP 422)
+- Stock adjustment at an uninvolved location allowed while an active movement runs between two other locations (location-scoped active movement guard)
+- Movement creation blocked when a pending stock adjustment exists at the origin or destination location for any of the requested goods (pending adjustment lock — HTTP 409)
 
 See `simulation-test.md` in the project root for documented end-to-end test scenarios and results.
 
