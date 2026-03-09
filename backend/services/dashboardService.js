@@ -68,7 +68,7 @@ const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
       {
         model: MovementDetail,
         as: 'details',
-        include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit', 'category'] }],
+        include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'productId', 'status'] }],
       },
     ],
     order: [['createdAt', 'DESC']],
@@ -83,16 +83,40 @@ const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
     : headers;
 
   const movements = [];
+  let totalIn = 0;
+  let totalOut = 0;
+  let totalTransfer = 0;
+
+  const locationIdNum = locationId ? Number(locationId) : null;
+
   for (const h of filtered) {
     for (const d of h.details ?? []) {
+      const qty = parseFloat(d.quantity);
+
+      let type = 'transfer';
+      if (locationIdNum) {
+        if (Number(h.destinationLocationId) === locationIdNum) {
+          type = 'in';
+          totalIn += qty;
+        } else if (Number(h.originLocationId) === locationIdNum) {
+          type = 'out';
+          totalOut += qty;
+        } else {
+          totalTransfer += qty;
+        }
+      } else {
+        totalTransfer += qty;
+      }
+
       movements.push({
         id: h.id,
         movementNumber: h.movementNumber,
         date: h.createdAt,
+        type,
         fromLocation: h.originLocation,
         toLocation: h.destinationLocation,
         goods: d.goods,
-        quantity: parseFloat(d.quantity),
+        quantity: qty,
         status: h.status,
         notes: h.notes,
       });
@@ -101,8 +125,11 @@ const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
 
   return {
     summary: {
-      total: filtered.length,
+      total: movements.length,
       lines: movements.length,
+      totalIn,
+      totalOut,
+      totalTransfer,
     },
     movements,
   };
@@ -178,7 +205,7 @@ const getStockChartData = async ({ locationId } = {}) => {
 
 /**
  * Movement Trends – daily totals over a date range (line chart).
- * Uses legacy Movement table. Returns empty data if table has no records.
+ * Uses MovementHeader (canonical movement workflow).
  */
 const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
   const end = endDate || new Date().toISOString().split('T')[0];
@@ -189,6 +216,12 @@ const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
   })();
 
   const where = { createdAt: { [Op.between]: [start, end] } };
+  if (locationId) {
+    where[Op.or] = [
+      { originLocationId: locationId },
+      { destinationLocationId: locationId },
+    ];
+  }
 
   const baseQuery = {
     where,
@@ -201,9 +234,7 @@ const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
     raw: true,
   };
 
-  const movements = locationId
-    ? await Movement.findAll({ ...baseQuery, where: { ...where } })
-    : await Movement.findAll(baseQuery);
+  const movements = await MovementHeader.findAll(baseQuery);
 
   const dateMap = {};
   movements.forEach(({ date, total }) => {

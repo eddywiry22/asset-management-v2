@@ -4,24 +4,17 @@
 module.exports = {
   async up(queryInterface, _Sequelize) {
     await queryInterface.bulkInsert('roles', [
-      {
-        name: 'Warehouse Admin',
-        description: 'Full access to all warehouse modules including user management and system configuration.',
-      },
-      {
-        name: 'Warehouse Head',
-        description: 'Oversees warehouse operations, can approve transactions and manage stock.',
-      },
-      {
-        name: 'Warehouse Operator',
-        description: 'Day-to-day warehouse operations including receiving, dispatching, and stock updates.',
-      },
+      { name: 'admin', description: 'Full system access.' },
+      { name: 'manager', description: 'Manager approval and reporting access.' },
+      { name: 'viewer', description: 'Read-only dashboard/report access.' },
+      { name: 'warehouse_head', description: 'Warehouse head operations and approvals.' },
+      { name: 'warehouse_operator', description: 'Warehouse operator movement/stock operations.' },
     ]);
   },
 
   async down(queryInterface, _Sequelize) {
     await queryInterface.bulkDelete('roles', {
-      name: ['Warehouse Admin', 'Warehouse Head', 'Warehouse Operator'],
+      name: ['admin', 'manager', 'viewer', 'warehouse_head', 'warehouse_operator'],
     });
   },
 };

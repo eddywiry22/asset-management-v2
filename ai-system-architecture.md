@@ -371,6 +371,40 @@ entries survive user deletion.
 
 ---
 
+
+## CANONICAL REFERENCE-DATA ENDPOINTS
+
+Use these endpoints for dropdown/reference data in frontend workflows:
+
+- `GET /api/reference-data/locations`
+- `GET /api/reference-data/goods`
+- `GET /api/reference-data/stocks?locationId=`
+
+Legacy compatibility route `GET /api/reference-data/items` may exist as an alias,
+but new code should use `/goods` and goods-based field names (`goodsId`,
+`productId`) only.
+
+---
+
+## CANONICAL SEED DATA EXPECTATIONS
+
+Backend seeders should maintain a deterministic baseline compatible with the
+active model/schema contract:
+
+- Roles use canonical enum names: `admin`, `manager`, `viewer`,
+  `warehouse_head`, `warehouse_operator`.
+- Categories and vendors use `name` (not legacy `category`/`vendor` columns).
+- Goods use `product_id`, `status`, `created_by`, `updated_by`,
+  `created_at`, `updated_at`.
+- `seed-users` provides warehouse-head coverage for both seeded locations
+  (Main Warehouse and Secondary Warehouse).
+- `seed-stock` seeds stock in table `stock` (singular), and baseline quantities
+  are consistent across seeded goods/location pairs.
+
+These constraints prevent runtime drift between seeded data and service logic.
+
+---
+
 ## ERD
 
 ```mermaid

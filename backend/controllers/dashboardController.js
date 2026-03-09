@@ -67,14 +67,11 @@ const exportStock = async (req, res, next) => {
 
     const fields = [
       { label: 'Location', value: 'location.name' },
-      { label: 'Location Code', value: 'location.code' },
-      { label: 'Good', value: 'good.name' },
-      { label: 'SKU', value: 'good.sku' },
-      { label: 'Category', value: 'good.category' },
-      { label: 'Unit', value: 'good.unit' },
+      { label: 'Goods', value: 'goods.name' },
+      { label: 'Product ID', value: 'goods.productId' },
       { label: 'Quantity', value: 'quantity' },
-      { label: 'Min Quantity', value: 'minQuantity' },
-      { label: 'Status', value: 'status' },
+      { label: 'Stock Status', value: 'status' },
+      { label: 'Goods Status', value: 'goods.status' },
     ];
 
     const parser = new Parser({ fields });
@@ -96,10 +93,9 @@ const exportMovements = async (req, res, next) => {
     const fields = [
       { label: 'Date', value: (row) => row.date ? new Date(row.date).toISOString().split('T')[0] : '' },
       { label: 'Movement #', value: 'movementNumber' },
+      { label: 'Type', value: 'type' },
       { label: 'Good', value: 'goods.name' },
-      { label: 'SKU', value: 'goods.sku' },
-      { label: 'Category', value: 'goods.category' },
-      { label: 'Unit', value: 'goods.unit' },
+      { label: 'Product ID', value: 'goods.productId' },
       { label: 'Quantity', value: 'quantity' },
       { label: 'From Location', value: (row) => row.fromLocation?.name || '' },
       { label: 'To Location', value: (row) => row.toLocation?.name || '' },

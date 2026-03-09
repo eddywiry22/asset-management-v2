@@ -3,21 +3,28 @@
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, _Sequelize) {
+    const now = new Date();
     await queryInterface.bulkInsert('categories', [
       {
-        category: 'Electronics',
-        description: 'Electronic equipment, devices, and components such as computers, monitors, and peripherals.',
+        name: 'Electronics',
+        description: 'Electronic equipment and components.',
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
       },
       {
-        category: 'Office Supplies',
-        description: 'General office supplies including stationery, paper, pens, and desk accessories.',
+        name: 'Office Supplies',
+        description: 'General office consumables and stationery.',
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
       },
     ]);
   },
 
   async down(queryInterface, _Sequelize) {
     await queryInterface.bulkDelete('categories', {
-      category: ['Electronics', 'Office Supplies'],
+      name: ['Electronics', 'Office Supplies'],
     });
   },
 };
