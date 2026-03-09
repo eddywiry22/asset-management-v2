@@ -1159,3 +1159,125 @@ describe('Scenario 9 — Cross-Location Stock Adjustment Independence', () => {
     });
   });
 });
+
+// ===========================================================================
+// Scenario 10 — Movement Creation vs Pending Stock Adjustment (GAP ANALYSIS)
+//
+// Workflow under test:
+//   1. A user creates a stock adjustment request at Location A for Goods A
+//      (status = 'pending' — not yet approved or rejected).
+//   2. A user from Location B attempts to create a movement request from
+//      Location B → Location A that includes Goods A.
+//   3. Expectation: the movement should be BLOCKED because Location A's
+//      Goods A stock is "locked" by the pending adjustment.
+//
+// FINDING — codebase does NOT support this workflow:
+//   createMovement guards only query MovementHeader records:
+//     • Route-scoped duplicate check  → MovementHeader.findAll
+//     • Goods-scoped in-flight lock   → MovementHeader.findOne (findActiveMovementForGoods)
+//   A pending StockAdjustment creates NO MovementHeader. Both guards therefore
+//   return null and the movement proceeds without any 409 error.
+//
+//   The test named "EXPECTED (currently fails)" asserts the blocking 409 that
+//   the described workflow requires. It is marked with expect.assertions(1) so
+//   a silent pass cannot mask the failure. Running the suite will show this
+//   test failing with "Received promise resolved instead of rejected", which
+//   confirms the gap in the codebase.
+// ===========================================================================
+describe('Scenario 10 — Movement Creation vs Pending Stock Adjustment (Gap Analysis)', () => {
+  const GOODS_A_ID    = 10;
+  const LOCATION_A_ID = 1;   // destination of the movement / location with pending adjustment
+  const LOCATION_B_ID = 2;   // origin of the movement
+  const USER_B_ID     = 6;
+
+  const goodsA    = { id: GOODS_A_ID, name: 'Goods A', productId: 'GA-001', status: 'ACTIVE' };
+  const locationA = { id: LOCATION_A_ID, name: 'Warehouse A', status: 'ACTIVE' };
+  const locationB = { id: LOCATION_B_ID, name: 'Warehouse B', status: 'ACTIVE' };
+
+  /** Wire up all createMovement pre-checks to pass so we reach the duplicate/in-flight guards. */
+  const setupMovementPrechecks = () => {
+    Location.findByPk
+      .mockResolvedValueOnce(locationB)   // origin location check
+      .mockResolvedValueOnce(locationA);  // destination location check
+
+    Goods.unscoped.mockReturnValue(Goods);
+    Goods.findByPk.mockResolvedValue(goodsA);
+
+    // Origin stock at Location B: enough quantity
+    Stock.findOne
+      .mockResolvedValueOnce({ quantity: 100 })  // origin qty check inside loop
+      .mockResolvedValueOnce({ quantity: 20 });  // dest stock exists check (itemsNeedingDestStock)
+
+    MovementHeader.count.mockResolvedValue(1);  // movement number generation
+  };
+
+  // -------------------------------------------------------------------------
+  // ACTUAL behaviour: movement IS created — pending adjustment is invisible
+  // -------------------------------------------------------------------------
+  test('ACTUAL — movement from B→A is created even though Location A has a pending stock adjustment for Goods A', async () => {
+    setupMovementPrechecks();
+
+    // Pending adjustment exists for Location A / Goods A — but createMovement
+    // never queries StockAdjustment, so this state has no effect.
+    // Both guards return null → no 409 thrown.
+    MovementHeader.findAll.mockResolvedValue([]); // no route-scoped duplicate
+    MovementHeader.findOne.mockResolvedValue(null); // no in-flight goods lock
+
+    const createdHeader = {
+      id: 1,
+      movementNumber: 'MV-202603-00001',
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      status: 'PENDING_HEAD_APPROVAL',
+      update: jest.fn(),
+    };
+    MovementHeader.create.mockResolvedValue(createdHeader);
+    MovementDetail.bulkCreate.mockResolvedValue([]);
+
+    // Movement succeeds — the pending adjustment at Location A is completely ignored
+    const { movement } = await movementService.createMovement(USER_B_ID, {
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+    });
+
+    expect(movement).toBeDefined();
+    expect(movement.status).toBe('PENDING_HEAD_APPROVAL');
+
+    // Confirm StockAdjustment was never queried by createMovement
+    expect(StockAdjustment.findOne).not.toHaveBeenCalled();
+    expect(StockAdjustment.findAll).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // EXPECTED behaviour: movement should be blocked — but this test will FAIL
+  // because the guard does not exist in the current codebase.
+  // -------------------------------------------------------------------------
+  test('EXPECTED (currently fails) — movement from B→A must be rejected 409 when Location A has a pending adjustment for Goods A', async () => {
+    setupMovementPrechecks();
+
+    MovementHeader.findAll.mockResolvedValue([]); // no route-scoped duplicate
+    MovementHeader.findOne.mockResolvedValue(null); // no in-flight MovementHeader
+
+    const createdHeader = {
+      id: 1,
+      movementNumber: 'MV-202603-00001',
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      status: 'PENDING_HEAD_APPROVAL',
+      update: jest.fn(),
+    };
+    MovementHeader.create.mockResolvedValue(createdHeader);
+    MovementDetail.bulkCreate.mockResolvedValue([]);
+
+    // This assertion will fail: the code resolves instead of rejecting,
+    // proving that createMovement has no guard against pending StockAdjustments.
+    await expect(
+      movementService.createMovement(USER_B_ID, {
+        originLocationId: LOCATION_B_ID,
+        destinationLocationId: LOCATION_A_ID,
+        items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
