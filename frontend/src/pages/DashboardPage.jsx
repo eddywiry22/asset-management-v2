@@ -33,6 +33,8 @@ const STATUS_BADGE = {
   ok: 'bg-green-100 text-green-700',
   low: 'bg-yellow-100 text-yellow-700',
   out_of_stock: 'bg-red-100 text-red-700',
+  active: 'bg-green-100 text-green-700',
+  inactive: 'bg-gray-100 text-gray-500',
 };
 
 function Badge({ value, map }) {
@@ -165,7 +167,7 @@ export default function DashboardPage() {
           {/* ── Stock Overview ── */}
           <section>
             <h3 className="mb-3 text-base font-semibold text-gray-800">Stock Overview</h3>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <StatsCard
                 label="Total Items"
                 value={stockOverview?.summary.totalItems ?? 0}
@@ -177,12 +179,6 @@ export default function DashboardPage() {
                 value={stockOverview?.summary.totalQuantity?.toLocaleString() ?? 0}
                 icon="⊡"
                 colorClass="bg-indigo-50 text-indigo-700"
-              />
-              <StatsCard
-                label="Low Stock Items"
-                value={stockOverview?.summary.lowStockItems ?? 0}
-                icon="⚠"
-                colorClass="bg-yellow-50 text-yellow-700"
               />
               <StatsCard
                 label="Out of Stock"
@@ -312,7 +308,7 @@ export default function DashboardPage() {
                           <td className="px-4 py-3">
                             <Badge value={m.type} map={TYPE_BADGE} />
                           </td>
-                          <td className="px-4 py-3 font-medium text-gray-800">{m.good?.name}</td>
+                          <td className="px-4 py-3 font-medium text-gray-800">{m.goods?.name}</td>
                           <td className="px-4 py-3 text-gray-500">{m.fromLocation?.name || '—'}</td>
                           <td className="px-4 py-3 text-gray-500">{m.toLocation?.name || '—'}</td>
                           <td className="px-4 py-3 font-semibold">{m.quantity.toLocaleString()}</td>
@@ -345,7 +341,7 @@ export default function DashboardPage() {
                   <table className="min-w-full text-sm">
                     <thead className="bg-gray-50">
                       <tr>
-                        {['Location', 'Good', 'SKU', 'Category', 'Unit', 'Qty', 'Min Qty', 'Status'].map(
+                        {['Location', 'Goods', 'Product ID', 'Qty', 'Stock Status', 'Goods Status'].map(
                           (h) => (
                             <th
                               key={h}
@@ -361,14 +357,14 @@ export default function DashboardPage() {
                       {stockOverview.stocks.map((s) => (
                         <tr key={s.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3 font-medium text-gray-800">{s.location?.name}</td>
-                          <td className="px-4 py-3 text-gray-700">{s.good?.name}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-gray-500">{s.good?.sku}</td>
-                          <td className="px-4 py-3 text-gray-500">{s.good?.category || '—'}</td>
-                          <td className="px-4 py-3 text-gray-500">{s.good?.unit}</td>
+                          <td className="px-4 py-3 text-gray-700">{s.goods?.name}</td>
+                          <td className="px-4 py-3 font-mono text-xs text-gray-500">{s.goods?.productId}</td>
                           <td className="px-4 py-3 font-semibold">{s.quantity.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-gray-500">{s.minQuantity.toLocaleString()}</td>
                           <td className="px-4 py-3">
                             <Badge value={s.status} map={STATUS_BADGE} />
+                          </td>
+                          <td className="px-4 py-3">
+                            <Badge value={String(s.goods?.status || '').toLowerCase()} map={STATUS_BADGE} />
                           </td>
                         </tr>
                       ))}

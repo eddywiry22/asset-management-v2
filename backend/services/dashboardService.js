@@ -68,7 +68,7 @@ const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
       {
         model: MovementDetail,
         as: 'details',
-        include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit', 'category'] }],
+        include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'productId', 'status'] }],
       },
     ],
     order: [['createdAt', 'DESC']],
@@ -83,16 +83,40 @@ const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
     : headers;
 
   const movements = [];
+  let totalIn = 0;
+  let totalOut = 0;
+  let totalTransfer = 0;
+
+  const locationIdNum = locationId ? Number(locationId) : null;
+
   for (const h of filtered) {
     for (const d of h.details ?? []) {
+      const qty = parseFloat(d.quantity);
+
+      let type = 'transfer';
+      if (locationIdNum) {
+        if (Number(h.destinationLocationId) === locationIdNum) {
+          type = 'in';
+          totalIn += qty;
+        } else if (Number(h.originLocationId) === locationIdNum) {
+          type = 'out';
+          totalOut += qty;
+        } else {
+          totalTransfer += qty;
+        }
+      } else {
+        totalTransfer += qty;
+      }
+
       movements.push({
         id: h.id,
         movementNumber: h.movementNumber,
         date: h.createdAt,
+        type,
         fromLocation: h.originLocation,
         toLocation: h.destinationLocation,
         goods: d.goods,
-        quantity: parseFloat(d.quantity),
+        quantity: qty,
         status: h.status,
         notes: h.notes,
       });
@@ -101,8 +125,11 @@ const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
 
   return {
     summary: {
-      total: filtered.length,
+      total: movements.length,
       lines: movements.length,
+      totalIn,
+      totalOut,
+      totalTransfer,
     },
     movements,
   };

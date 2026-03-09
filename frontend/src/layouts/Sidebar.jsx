@@ -9,7 +9,6 @@ const NAV_ITEMS = [
   { to: '/stock-adjustments',label: 'Stock Adjustments', icon: '±', module: 'stock'      },
   { to: '/movements',         label: 'Movements',          icon: '↕', module: 'movements'  },
   { to: '/movement-requests', label: 'Movement Requests', icon: '⇄', module: 'movements'  },
-  { to: '/reports',           label: 'Reports',           icon: '◈', module: 'reports'    },
 ];
 
 const ADMIN_NAV_ITEMS = [
