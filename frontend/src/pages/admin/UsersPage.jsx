@@ -3,7 +3,7 @@ import userService from '@/services/userService';
 import locationService from '@/services/locationService';
 import { useAuth } from '@/contexts/AuthContext';
 
-const ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+const ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head'];
 
 const EMPTY_FORM = {
   name: '',

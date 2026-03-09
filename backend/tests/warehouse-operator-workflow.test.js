@@ -6,7 +6,7 @@
  * Covers the 8 scenarios from simulation-test.md:
  *  1. Warehouse operator creates movement request
  *  2. Warehouse head approves request
- *  3. Destination operator approves request
+ *  3. Destination warehouse operator approves request
  *  4. Movement finalized and stock updated
  *  5. Movement rejected with reason
  *  6. Duplicate movement request attempted
@@ -319,9 +319,9 @@ describe('Scenario 2 — Warehouse Head Approves Request', () => {
 });
 
 // ===========================================================================
-// Scenario 3 — Destination Operator Approves Request
+// Scenario 3 — Destination Warehouse Operator Approves Request
 // ===========================================================================
-describe('Scenario 3 — Destination Operator Approves Request', () => {
+describe('Scenario 3 — Destination Warehouse Operator Approves Request', () => {
   const destOperatorId = 30;
   const destLocationId = 2;
   const movementId = 1;
@@ -334,11 +334,12 @@ describe('Scenario 3 — Destination Operator Approves Request', () => {
     });
     MovementHeader.findByPk.mockResolvedValue(movement);
 
+    // warehouse_operator at destination location acts as destination approver
     const result = await movementService.approveByDestination(
       destOperatorId,
       movementId,
       destLocationId,        // userLocationId matches destination
-      'destination_operator'
+      'warehouse_operator'
     );
 
     expect(movement.update).toHaveBeenCalledWith(
@@ -355,11 +356,11 @@ describe('Scenario 3 — Destination Operator Approves Request', () => {
     MovementHeader.findByPk.mockResolvedValue(movement);
 
     await expect(
-      movementService.approveByDestination(destOperatorId, movementId, destLocationId, 'destination_operator')
+      movementService.approveByDestination(destOperatorId, movementId, destLocationId, 'warehouse_operator')
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  test('rejects if destination_operator locationId does not match destination', async () => {
+  test('rejects if warehouse_operator locationId does not match destination', async () => {
     const movement = makeMovementHeader({
       status: 'PENDING_DESTINATION_APPROVAL',
       destinationLocationId: 99, // different location
@@ -367,7 +368,7 @@ describe('Scenario 3 — Destination Operator Approves Request', () => {
     MovementHeader.findByPk.mockResolvedValue(movement);
 
     await expect(
-      movementService.approveByDestination(destOperatorId, movementId, destLocationId, 'destination_operator')
+      movementService.approveByDestination(destOperatorId, movementId, destLocationId, 'warehouse_operator')
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 
@@ -421,7 +422,8 @@ describe('Scenario 4 — Movement Finalized and Stock Updated', () => {
   });
 
   test('deducts from origin and adds to destination atomically', async () => {
-    const result = await movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator');
+    // Pass destinationLocationId (2) as userLocationId — destination operator finalizes
+    const result = await movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator', 2);
 
     // Origin should have been decremented: 50 - 5 = 45
     expect(originStock.update).toHaveBeenCalledWith(
@@ -450,7 +452,7 @@ describe('Scenario 4 — Movement Finalized and Stock Updated', () => {
       .mockResolvedValueOnce(originStock)
       .mockResolvedValueOnce(destStock);
 
-    await movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator');
+    await movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator', 2);
 
     expect(movement.update).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'COMPLETED' }),
@@ -463,7 +465,7 @@ describe('Scenario 4 — Movement Finalized and Stock Updated', () => {
     MovementHeader.findByPk.mockResolvedValue(movement);
 
     await expect(
-      movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator')
+      movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator', 2)
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
@@ -486,20 +488,22 @@ describe('Scenario 4 — Movement Finalized and Stock Updated', () => {
     MovementHeader.findByPk.mockResolvedValue(movement);
 
     await expect(
-      movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator')
+      movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator', 2)
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  test('non-owner warehouse_operator cannot finalize another operator\'s movement', async () => {
+  test('warehouse_operator at wrong location cannot finalize a movement', async () => {
+    // BUG-R9-02: finalization authority is location-based (destination), not requester-based.
+    // An operator whose locationId does not match destinationLocationId is rejected.
     const movement = makeMovementHeader({
       status: 'APPROVED_READY_FOR_FINALIZATION',
-      requestedById: 999, // different operator
+      destinationLocationId: 2,
       details: [{ goodsId: 10, quantity: 5 }],
     });
     MovementHeader.findByPk.mockResolvedValue(movement);
 
     await expect(
-      movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator')
+      movementService.finalizeMovement(operatorId, movementId, 'warehouse_operator', 99) // wrong location
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 });
@@ -531,15 +535,17 @@ describe('Scenario 5 — Movement Rejected with Reason', () => {
     expect(result).toBeDefined();
   });
 
-  test('destination_operator can reject a PENDING_DESTINATION_APPROVAL movement', async () => {
+  test('warehouse_operator at destination can reject a PENDING_DESTINATION_APPROVAL movement', async () => {
     const destUserId = 30;
     const movement = makeMovementHeader({
       id: movementId,
       status: 'PENDING_DESTINATION_APPROVAL',
+      destinationLocationId: 2,
     });
     MovementHeader.findByPk.mockResolvedValue(movement);
 
-    await movementService.rejectMovement(destUserId, movementId, reason, 'destination_operator');
+    // Pass userLocationId=2 matching the movement's destinationLocationId
+    await movementService.rejectMovement(destUserId, movementId, reason, 'warehouse_operator', 2);
 
     expect(movement.update).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'REJECTED', rejectionReason: reason })
@@ -592,13 +598,19 @@ describe('Scenario 5 — Movement Rejected with Reason', () => {
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 
-  test('destination_operator cannot reject a movement at PENDING_HEAD_APPROVAL stage', async () => {
+  test('warehouse_operator at wrong location cannot reject a movement', async () => {
+    // BUG-R9-03: destination warehouse_operator CAN reject at PENDING_HEAD_APPROVAL
+    // only when their locationId matches the movement's destinationLocationId.
+    // A mismatched locationId must be rejected with 403.
     const destUserId = 30;
-    const movement = makeMovementHeader({ status: 'PENDING_HEAD_APPROVAL' });
+    const movement = makeMovementHeader({
+      status: 'PENDING_HEAD_APPROVAL',
+      destinationLocationId: 99, // different from userLocationId below
+    });
     MovementHeader.findByPk.mockResolvedValue(movement);
 
     await expect(
-      movementService.rejectMovement(destUserId, movementId, reason, 'destination_operator')
+      movementService.rejectMovement(destUserId, movementId, reason, 'warehouse_operator', 2) // locationId 2 ≠ 99
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 });

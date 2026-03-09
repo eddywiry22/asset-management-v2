@@ -6,7 +6,7 @@ const validate = require('../middlewares/validate');
 
 const router = Router();
 
-const VALID_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+const VALID_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head'];
 
 const createSchema = Joi.object({
   name: Joi.string().max(100).required(),

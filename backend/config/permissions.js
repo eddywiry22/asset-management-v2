@@ -7,9 +7,11 @@
  * Actions  : view, create, edit, delete, export, approve
  *
  * Warehouse roles:
- *   warehouse_operator  – creates movement requests from their assigned location
- *   warehouse_head      – approves (head stage) and finalizes movements at their location
- *   destination_operator – approves (destination stage) movements targeting their location
+ *   warehouse_operator  – creates movement requests from their assigned location;
+ *                         also acts as destination approver / finalizer when their
+ *                         locationId matches the movement's destinationLocationId.
+ *   warehouse_head      – approves (head stage), can finalize and recall movements
+ *                         at their location.
  *
  * Admin module: Users, Locations, Categories, Vendors management.
  *   Only accessible by admin and warehouse_head.
@@ -58,11 +60,6 @@ const PERMISSIONS = {
     users:      ['view', 'create', 'edit', 'delete'],
     admin:      ['view', 'create', 'edit', 'delete'],
     audit:      ['view'],
-  },
-  destination_operator: {
-    dashboard:  ['view'],
-    assets:     ['view'],
-    movements:  ['view', 'approve'],
   },
 };
 

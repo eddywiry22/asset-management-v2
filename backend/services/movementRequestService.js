@@ -12,17 +12,16 @@ function requiresActionWhere(user) {
     // Head approves requests that are still pending initial approval
     return { status: 'PENDING' };
   }
-  if (user.role === 'destination_operator') {
-    // Destination operator approves requests targeting their location that are
-    // head-approved (IN_TRANSIT = awaiting destination confirmation in this simplified model)
-    return {
-      status: 'IN_TRANSIT',
-      toLocationId: user.locationId,
-    };
-  }
   if (user.role === 'warehouse_operator') {
-    // Operators see rejected requests they submitted so they can act on feedback
-    return { status: 'REJECTED', requestedBy: user.id };
+    // Destination-side: requests targeting this operator's location awaiting their approval
+    // (IN_TRANSIT = head-approved, awaiting destination confirmation)
+    // plus their own rejected requests so they can act on feedback
+    return {
+      [Op.or]: [
+        { status: 'IN_TRANSIT', toLocationId: user.locationId },
+        { status: 'REJECTED', requestedBy: user.id },
+      ],
+    };
   }
   return null; // other roles have no action-required items
 }
@@ -53,8 +52,7 @@ async function getAll(filters, user) {
   } else {
     // Non-admin roles can only see their own requests or those relevant to them
     if (user.role === 'warehouse_operator') {
-      where.requestedBy = user.id;
-    } else if (user.role === 'destination_operator') {
+      // See own requests plus requests destined for their location
       where[Op.or] = [
         { toLocationId: user.locationId },
         { requestedBy: user.id },
@@ -133,8 +131,8 @@ async function create(data, user) {
  * valid for this model and cause runtime ENUM constraint failures.
  *
  * Role mapping:
- *   warehouse_head    approves PENDING        → IN_TRANSIT
- *   destination_operator approves IN_TRANSIT  → APPROVED
+ *   warehouse_head    approves PENDING       → IN_TRANSIT
+ *   warehouse_operator at destination approves IN_TRANSIT → APPROVED
  */
 async function updateStatus(id, action, reviewerUser, rejectionReason) {
   const request = await MovementRequest.findByPk(id);
@@ -145,7 +143,7 @@ async function updateStatus(id, action, reviewerUser, rejectionReason) {
   if (action === 'approve') {
     if (role === 'warehouse_head' && request.status === 'PENDING') {
       request.status = 'IN_TRANSIT';
-    } else if (role === 'destination_operator' && request.status === 'IN_TRANSIT') {
+    } else if (role === 'warehouse_operator' && request.status === 'IN_TRANSIT') {
       request.status = 'APPROVED';
     } else {
       throw new AppError('You cannot approve this request in its current state', 403);
@@ -153,7 +151,7 @@ async function updateStatus(id, action, reviewerUser, rejectionReason) {
   } else if (action === 'reject') {
     if (
       (role === 'warehouse_head' && request.status === 'PENDING') ||
-      (role === 'destination_operator' && request.status === 'IN_TRANSIT')
+      (role === 'warehouse_operator' && request.status === 'IN_TRANSIT')
     ) {
       request.status = 'REJECTED';
     } else {
