@@ -13,7 +13,7 @@ A full-stack warehouse asset management application built with React (Vite) on t
 - **Movements** – track inbound, outbound, and transfer movements with full detail views
 - **Admin Module** – role-gated section for Users, Locations, Categories, and Vendors CRUD
 - **Audit Log** – immutable log of all create/update/delete operations
-- **Role-based Access Control** – three warehouse roles (Admin, Head, Operator) with permission guards
+- **Role-based Access Control** – three warehouse roles (`admin`, `warehouse_head`, `warehouse_operator`) with location-based permission guards; a `warehouse_operator` acts as destination approver / finalizer when their assigned location matches the movement destination
 - **JWT Auth** – access + refresh token flow with bcrypt password hashing
 
 ---
@@ -109,12 +109,12 @@ npm run seed
 
 **Demo credentials after seeding:**
 
-| Email                         | Password        | Role              |
-|-------------------------------|-----------------|-------------------|
-| warehouse.admin@example.com   | Admin@1234      | Warehouse Admin   |
-| warehouse.head@example.com    | Head@1234       | Warehouse Head    |
-| operator.one@example.com      | Operator@1234   | Warehouse Operator (Main) |
-| operator.two@example.com      | Operator@1234   | Warehouse Operator (Secondary) |
+| Email                         | Password        | Role                       | Assigned Location |
+|-------------------------------|-----------------|----------------------------|-------------------|
+| warehouse.admin@example.com   | Admin@1234      | `admin`                    | —                 |
+| warehouse.head@example.com    | Head@1234       | `warehouse_head`           | Warehouse A (origin) |
+| operator.one@example.com      | Operator@1234   | `warehouse_operator`       | Warehouse A (creates movement requests, origin-side) |
+| operator.two@example.com      | Operator@1234   | `warehouse_operator`       | Warehouse B (destination approver / finalizer for inbound movements) |
 
 ### 4. Start the backend
 
@@ -210,11 +210,42 @@ docker-compose up --build
 
 ### Movements
 
-| Method | Endpoint            | Auth required | Description           |
-|--------|---------------------|---------------|-----------------------|
-| GET    | `/api/movements`    | Yes           | List movements        |
-| POST   | `/api/movements`    | Admin/Head    | Create movement       |
-| GET    | `/api/movements/:id`| Yes           | Get movement detail   |
+| Method | Endpoint                              | Auth required                    | Description                                              |
+|--------|---------------------------------------|----------------------------------|----------------------------------------------------------|
+| POST   | `/api/movements/preview`              | Yes                              | Preview qty snapshots without saving                     |
+| POST   | `/api/movements`                      | `warehouse_operator`, `warehouse_head`, `admin` | Create movement request (status: `PENDING_HEAD_APPROVAL`) |
+| GET    | `/api/movements`                      | Yes                              | List movements (filterable by status, location)          |
+| GET    | `/api/movements/:id`                  | Yes                              | Get movement detail                                      |
+| POST   | `/api/movements/:id/approve-head`     | `warehouse_head`, `admin`        | Head approves → `PENDING_DESTINATION_APPROVAL` (origin location ownership enforced) |
+| POST   | `/api/movements/:id/approve-dest`     | `warehouse_operator`, `admin`    | Destination approves → `APPROVED_READY_FOR_FINALIZATION` (destination location ownership enforced) |
+| POST   | `/api/movements/:id/finalize`         | `warehouse_operator`, `warehouse_head`, `admin` | Finalize and update stock → `COMPLETED` (destination location ownership enforced) |
+| POST   | `/api/movements/:id/reject`           | `warehouse_head`, `warehouse_operator`, `admin` | Reject at `PENDING_*` stages with mandatory reason (location ownership enforced) |
+| POST   | `/api/movements/:id/recall`           | `warehouse_head`, `warehouse_operator`, `manager`, `admin` | Recall at `APPROVED_READY_FOR_FINALIZATION` with mandatory reason |
+| POST   | `/api/movements/:id/cancel`           | `warehouse_operator`, `admin`    | Requester cancels their own `PENDING_HEAD_APPROVAL` request |
+
+#### Movement Workflow State Machine
+
+```
+warehouse_operator creates
+        │
+        ▼
+PENDING_HEAD_APPROVAL
+        │ warehouse_head (origin) approves
+        ▼
+PENDING_DESTINATION_APPROVAL
+        │ warehouse_operator (destination) approves
+        ▼
+APPROVED_READY_FOR_FINALIZATION
+        │ warehouse_operator or warehouse_head (destination) finalizes
+        ▼
+    COMPLETED
+
+At PENDING_HEAD_APPROVAL or PENDING_DESTINATION_APPROVAL:
+  → REJECTED  via /reject  (warehouse_head at origin, warehouse_operator at destination, admin)
+
+At APPROVED_READY_FOR_FINALIZATION:
+  → REJECTED  via /recall  (warehouse_head at origin or destination, warehouse_operator at destination, admin)
+```
 
 ### Movement Requests
 
@@ -283,15 +314,33 @@ docker-compose up --build
 
 ## Role & Permission Summary
 
-| Capability                         | Warehouse Admin | Warehouse Head | Warehouse Operator |
-|------------------------------------|:--------------:|:--------------:|:-----------------:|
-| View dashboard / goods / stock     | ✓              | ✓              | ✓                 |
-| Submit movement requests           | ✓              | ✓              | ✓                 |
-| Approve / reject movement requests | ✓              | ✓              |                   |
-| Create movements / adjustments     | ✓              | ✓              |                   |
-| Manage categories, vendors         | ✓              | ✓              |                   |
-| Manage users & locations           | ✓              |                |                   |
-| View audit log                     | ✓              | ✓              |                   |
+There are five roles. The three warehouse-specific roles map directly to warehouse responsibilities:
+
+| Role | Description |
+|------|-------------|
+| `admin` | Full system access — users, locations, categories, vendors, all movements |
+| `manager` | Can view and approve movements; no admin module access |
+| `viewer` | Read-only access to dashboard, assets, and movements |
+| `warehouse_head` | Approves head-stage movements at their origin location; can recall fully-approved movements; manages master data and audit log |
+| `warehouse_operator` | Creates movement requests from their origin location; acts as **destination approver and finalizer** for movements arriving at their assigned location |
+
+> A `warehouse_operator` assigned to **Warehouse B** can approve the destination stage and finalize any movement whose `destinationLocationId` equals their `locationId`. No separate "destination operator" role exists — location ownership determines the actor's side of the workflow.
+
+| Capability                                                  | admin | manager | warehouse_head | warehouse_operator | viewer |
+|-------------------------------------------------------------|:-----:|:-------:|:--------------:|:------------------:|:------:|
+| View dashboard / goods / stock                              | ✓     | ✓       | ✓              | ✓                  | ✓      |
+| Submit movement requests (origin side)                      | ✓     | ✓       | ✓              | ✓                  |        |
+| Head-approve movements (origin warehouse)                   | ✓     |         | ✓              |                    |        |
+| Destination-approve movements (destination warehouse)       | ✓     |         |                | ✓                  |        |
+| Finalize movements (destination warehouse)                  | ✓     |         | ✓ †            | ✓ †                |        |
+| Reject movements at PENDING stages                          | ✓     |         | ✓              | ✓                  |        |
+| Recall movements at APPROVED_READY_FOR_FINALIZATION         | ✓     | ✓       | ✓              | ✓                  |        |
+| Create stock adjustments                                    | ✓     |         | ✓              |                    |        |
+| Manage categories, vendors                                  | ✓     |         | ✓              |                    |        |
+| Manage users & locations                                    | ✓     |         | ✓              |                    |        |
+| View audit log                                              | ✓     |         | ✓              |                    |        |
+
+† Service enforces `user.locationId === movement.destinationLocationId`; only the destination warehouse actor can finalize.
 
 ---
 

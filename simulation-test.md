@@ -3306,7 +3306,7 @@ The backend accepts `startDate` and `endDate` strings but performs no server-sid
 
 Stock A (goodsId=1) and Stock B (goodsId=2) — both ACTIVE, both present at Warehouse A with sufficient quantity.
 
-> **Critical context note:** The task specifies three roles — `admin`, `warehouse_head`, and `warehouse_operator`. The codebase, however, defines a fourth distinct role: `destination_operator`. The `approve-dest` endpoint requires `destination_operator`, not `warehouse_operator`. Every scenario where "warehouse operator B" acts as the destination approver is therefore affected by this role split. Each scenario is traced against the code exactly as it stands.
+> **Context note (historical — now resolved):** At the time of Run 9 the codebase defined a fourth distinct role `destination_operator` for destination-side approvals. All six bugs identified in this run have since been fixed. The `destination_operator` role has been removed; a `warehouse_operator` whose `locationId` matches the movement's `destinationLocationId` now performs all destination-side actions (approve, reject, recall, finalize). See *Run 9 Resolution* below.
 
 ---
 
@@ -3506,14 +3506,14 @@ Neither `COMPLETED` nor `REJECTED` is in this list.
 
 ## Run 9 Summary Table
 
-| # | Scenario | Duration (ms) | Result |
-|---|----------|--------------|--------|
-| 1 | Operator A creates movement; Head A approves; Operator B approves | ~14 | PARTIAL FAIL — steps 1a/1b pass; step 1c blocked (BUG-R9-01) |
-| 2 | Only Operator B can finalize after both approvals | ~6 | FAIL — finalize is creator-only; Operator B has no path (BUG-R9-02) |
-| 3 | Operator B rejects before Head A approves | ~4 | FAIL — route gate blocks warehouse_operator; destination_operator blocked by stage guard (BUG-R9-01, BUG-R9-03) |
-| 4 | Head A / Operator B / Head B reject after both approvals | ~5 | FAIL — rejection at APPROVED_READY_FOR_FINALIZATION universally blocked (BUG-R9-04, BUG-R9-05) |
-| 5 | Active movement blocks duplicate movement and stock adjustment | ~8 | PARTIAL PASS — stock adjustments fully blocked; movement duplicate guard is route-scoped (BUG-R9-06) |
-| 6 | After finalization or rejection, new movement and adjustment allowed | ~6 | PASS |
+| # | Scenario | Duration (ms) | Run 9 Result | Post-fix Status |
+|---|----------|--------------|--------------|-----------------|
+| 1 | Operator A creates movement; Head A approves; Operator B approves | ~14 | PARTIAL FAIL — step 1c blocked (BUG-R9-01) | **PASS** (Fixed) |
+| 2 | Only Operator B can finalize after both approvals | ~6 | FAIL — finalize is creator-only (BUG-R9-02) | **PASS** (Fixed) |
+| 3 | Operator B rejects before Head A approves | ~4 | FAIL — route gate + stage guard (BUG-R9-01, BUG-R9-03) | **PASS** (Fixed) |
+| 4 | Head A / Operator B / Head B reject after both approvals | ~5 | FAIL — no post-approval rejection path (BUG-R9-04, BUG-R9-05) | **PASS** (Fixed — via `/recall`) |
+| 5 | Active movement blocks duplicate movement and stock adjustment | ~8 | PARTIAL PASS — movement guard was route-scoped (BUG-R9-06) | **PASS** (Fixed) |
+| 6 | After finalization or rejection, new movement and adjustment allowed | ~6 | PASS | PASS |
 
 ---
 
@@ -3521,12 +3521,12 @@ Neither `COMPLETED` nor `REJECTED` is in this list.
 
 | ID | Severity | Description | Status |
 |----|----------|-------------|--------|
-| BUG-R9-01 | Critical | The `approve-dest` and `reject` endpoints require `destination_operator` role, but the task defines only `warehouse_operator` as the destination-side actor. A user with `warehouse_operator` role cannot participate in destination approval or rejection at any stage. The four-role codebase (`warehouse_operator`, `warehouse_head`, `destination_operator`, `admin`) is misaligned with the three-role specification (`admin`, `warehouse_head`, `warehouse_operator`). | Open |
-| BUG-R9-02 | High | `movementService.finalizeMovement` restricts non-admin finalization to the movement creator (`requestedById`). The task requires the destination operator (Warehouse Operator B) to be the sole finalizer, but the code assigns this right only to the originating operator (Warehouse Operator A). The finalize route also does not allow `destination_operator` role even if the business logic were corrected. | Open |
-| BUG-R9-03 | High | `movementService.rejectMovement` stage guard (line 519) prevents `destination_operator` from rejecting at `PENDING_HEAD_APPROVAL`. The task requires the destination-side actor to be able to reject before head approval. The current code restricts destination-side rejection to the `PENDING_DESTINATION_APPROVAL` stage only. | Open |
-| BUG-R9-04 | High | `movementService.rejectMovement` unconditionally returns 400 when `movement.status === 'APPROVED_READY_FOR_FINALIZATION'` (lines 512–517). The task requires that Warehouse Head A, Warehouse Operator B, and Warehouse Head B be able to reject a fully approved movement. There is no code path that supports post-approval rejection — the cancel endpoint is equally unavailable at this stage. | Open |
-| BUG-R9-05 | Medium | "Warehouse Head B" (head of the destination warehouse) is not a recognised actor in any movement workflow endpoint. `approve-head` enforces origin-location ownership, `approve-dest` targets `destination_operator`, and `reject` does not distinguish head-of-origin from head-of-destination. Warehouse Head B effectively has no defined role in movement approval, rejection, or finalization for movements arriving at their warehouse. | Open |
-| BUG-R9-06 | Medium | The duplicate-movement guard in `findDuplicateActiveMovement` compares `(originLocationId, destinationLocationId, goodsIds)` exactly. If Warehouse Operator A creates a second movement for the same goods to a *different* destination while the original is still active, the guard does not fire. The specification intent — that an active movement for given goods blocks all new movements for those goods — is stronger than what the code enforces. Stock adjustments correctly apply a goods-only check (no location filter) and are fully blocked. | Open |
+| BUG-R9-01 | Critical | The `approve-dest` and `reject` endpoints required `destination_operator` role, but the specification defines only `warehouse_operator` as the destination-side actor. A user with `warehouse_operator` role could not participate in destination approval or rejection at any stage. | **Fixed** — `destination_operator` role removed; `warehouse_operator` added to `approve-dest`, `reject`, and `recall` gates; service enforces `user.locationId === movement.destinationLocationId`. |
+| BUG-R9-02 | High | `movementService.finalizeMovement` restricted non-admin finalization to the movement creator (`requestedById`). The task requires the destination operator (Warehouse Operator B) to be the finalizer. | **Fixed** — ownership guard changed to `user.locationId === movement.destinationLocationId`; `warehouse_head` also added to the finalize route gate. |
+| BUG-R9-03 | High | `movementService.rejectMovement` stage guard prevented destination-side actors from rejecting at `PENDING_HEAD_APPROVAL`. Destination-side rejection was restricted to `PENDING_DESTINATION_APPROVAL` only. | **Fixed** — `warehouse_operator` at destination may now reject at both `PENDING_HEAD_APPROVAL` and `PENDING_DESTINATION_APPROVAL`; location-ownership check added. |
+| BUG-R9-04 | High | `movementService.rejectMovement` unconditionally returned 400 at `APPROVED_READY_FOR_FINALIZATION`. No path existed for post-approval rejection. | **Fixed** — new `POST /api/movements/:id/recall` endpoint and `recallMovement` service function handle post-approval halting with mandatory reason. |
+| BUG-R9-05 | Medium | Warehouse Head B (destination warehouse head) had no defined role in the movement workflow. | **Fixed** — destination `warehouse_head` (matched by `locationId`) is a named actor on the recall transition and finalization step. |
+| BUG-R9-06 | Medium | The duplicate-movement guard was route-scoped (`originLocationId + destinationLocationId + goodsIds`). Goods committed to an active movement could be re-requested on a different route. | **Fixed** — new `findActiveMovementForGoods` helper applies a goods-only in-flight lock inside the `createMovement` transaction, regardless of route. |
 
 ---
 
