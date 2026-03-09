@@ -15,8 +15,11 @@ const stockQuerySchema = Joi.object({
 // GET /api/locations
 router.get('/locations', referenceDataController.getLocations);
 
-// GET /api/items
-router.get('/items', referenceDataController.getItems);
+// GET /api/reference-data/goods (canonical)
+router.get('/goods', referenceDataController.getGoods);
+
+// GET /api/reference-data/items (legacy alias kept for backward compatibility)
+router.get('/items', referenceDataController.getGoods);
 
 // GET /api/stocks?locationId=X
 router.get('/stocks', validate(stockQuerySchema, 'query'), referenceDataController.getStocks);

@@ -10,10 +10,10 @@ const getLocations = async (req, res, next) => {
   }
 };
 
-const getItems = async (req, res, next) => {
+const getGoods = async (req, res, next) => {
   try {
-    const items = await referenceDataService.listItems();
-    return success(res, items, 'Items retrieved');
+    const goods = await referenceDataService.listGoods();
+    return success(res, goods, 'Goods retrieved');
   } catch (err) {
     return next(err);
   }
@@ -29,4 +29,4 @@ const getStocks = async (req, res, next) => {
   }
 };
 
-module.exports = { getLocations, getItems, getStocks };
+module.exports = { getLocations, getGoods, getStocks };
