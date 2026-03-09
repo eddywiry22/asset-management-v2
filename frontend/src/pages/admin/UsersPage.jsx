@@ -3,7 +3,10 @@ import userService from '@/services/userService';
 import locationService from '@/services/locationService';
 import { useAuth } from '@/contexts/AuthContext';
 
-const ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head'];
+// All roles — used for the filter dropdown so existing users remain searchable
+const ALL_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head'];
+// Roles assignable via the UI form; manager must be set directly in the DB
+const ASSIGNABLE_ROLES = ['admin', 'viewer', 'warehouse_operator', 'warehouse_head'];
 
 const EMPTY_FORM = {
   name: '',
@@ -192,7 +195,7 @@ export default function UsersPage() {
           onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
         >
           <option value="">All roles</option>
-          {ROLES.map((r) => (
+          {ALL_ROLES.map((r) => (
             <option key={r} value={r}>{roleLabel(r)}</option>
           ))}
         </select>
@@ -349,7 +352,7 @@ export default function UsersPage() {
                     value={form.role}
                     onChange={(e) => setForm({ ...form, role: e.target.value })}
                   >
-                    {ROLES.map((r) => (
+                    {ASSIGNABLE_ROLES.map((r) => (
                       <option key={r} value={r}>{roleLabel(r)}</option>
                     ))}
                   </select>

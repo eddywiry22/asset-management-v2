@@ -61,12 +61,11 @@ Active Sequelize models registered in `models/index.js`:
 - **MovementDetail** – table `movement_details` (line items for a MovementHeader)
 - **AuditLog** – table `audit_logs`
 
-Legacy/unused models still present in `models/` but NOT in `models/index.js`:
+Legacy / dormant models still present in `models/`:
 
-- `Good.js` (superseded by `Goods.js`)
-- `Goods.js` (the active one registered as `db.Goods`)
-- `Item.js` (registered but not used in current services)
-- `Movement.js` (simple movement model, superseded by MovementHeader workflow)
+- `Good.js` — **not registered** in `models/index.js`; superseded by `Goods.js`.
+- `Item.js` — registered as `db.Item` but has no associations and is not referenced by any current service. The `items` table is a legacy artifact; `Goods` is the single source of truth for products.
+- `Movement.js` — registered as `db.Movement` but superseded by the `MovementHeader` + `MovementDetail` workflow. No current service uses it.
 
 ---
 
@@ -196,15 +195,16 @@ destination `warehouse_head`, destination `warehouse_operator`, `admin`, and `ma
 
 ## DUPLICATE MOVEMENT RULE
 
-If a movement request exists with:
+Two checks are applied inside the `createMovement` transaction:
 
-- same origin
-- same destination
-- same items
+1. **Route-scoped duplicate check** — if a non-finalized movement exists with
+   the same origin, destination, and identical goods set, a new request is blocked.
 
-and is not finalized
-
-a new request cannot be created.
+2. **Goods-scoped in-flight lock** (`findActiveMovementForGoods`) — if any of the
+   requested goods appear in **any** active movement (regardless of origin/destination),
+   the new request is blocked. This matches the equivalent lock already applied in
+   `stockAdjustmentService` and prevents the same goods from being simultaneously
+   committed to multiple movements.
 
 ---
 
@@ -259,8 +259,10 @@ with boolean flags: `can_view`, `can_create`, `can_edit`, `can_delete`,
 - 365-day maximum date-range validation (client-side) on Dashboard and Stock pages
 - Movement request status counts
 - Recent movement activity
-- Movement list filterable by origin and destination location
-  (`GET /api/movements?originLocationId=&destinationLocationId=`)
+- Movement list filterable by status, origin and destination location
+  (`GET /api/movements?status=&originLocationId=&destinationLocationId=`)
+- Movement recall — `POST /api/movements/:id/recall` transitions
+  `APPROVED_READY_FOR_FINALIZATION → REJECTED` without updating stock
 
 ### Stock Period Summary Algorithm
 
@@ -451,15 +453,15 @@ erDiagram
         int requested_by_id FK
         enum status "PENDING_HEAD_APPROVAL|PENDING_DESTINATION_APPROVAL|APPROVED_READY_FOR_FINALIZATION|COMPLETED|REJECTED"
         text notes
-        text rejection_reason
+        text rejection_reason "populated on reject OR recall"
         int head_approved_by_id FK
         datetime head_approved_at
         int dest_approved_by_id FK
         datetime dest_approved_at
         int finalized_by_id FK
         datetime finalized_at
-        int rejected_by_id FK
-        datetime rejected_at
+        int rejected_by_id FK "populated on reject OR recall"
+        datetime rejected_at "populated on reject OR recall"
         datetime created_at
         datetime updated_at
     }

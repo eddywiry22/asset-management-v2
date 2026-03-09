@@ -9,8 +9,8 @@ A full-stack warehouse asset management application built with React (Vite) on t
 - **Dashboard** – real-time KPIs for stock, movements, and requests
 - **Goods / Inventory** – manage goods with categories, vendors, and soft-delete support
 - **Stock Management** – view stock levels per location and perform stock adjustments
-- **Movement Requests** – operators submit transfer requests; admins/heads approve or reject
-- **Movements** – track inbound, outbound, and transfer movements with full detail views
+- **Movement Requests** – operators submit transfer requests; heads/destination operators approve, reject, or recall
+- **Movements** – multi-step approval workflow (head approval → destination approval → finalization) with recall support
 - **Admin Module** – role-gated section for Users, Locations, Categories, and Vendors CRUD
 - **Audit Log** – immutable log of all create/update/delete operations
 - **Role-based Access Control** – three warehouse roles (`admin`, `warehouse_head`, `warehouse_operator`) with location-based permission guards; a `warehouse_operator` acts as destination approver / finalizer when their assigned location matches the movement destination
@@ -247,7 +247,7 @@ At APPROVED_READY_FOR_FINALIZATION:
   → REJECTED  via /recall  (warehouse_head at origin or destination, warehouse_operator at destination, admin)
 ```
 
-### Movement Requests
+### Movement Requests (Simple)
 
 | Method | Endpoint                        | Auth required | Description                  |
 |--------|---------------------------------|---------------|------------------------------|
@@ -358,9 +358,10 @@ Tests mock all Sequelize models and services, so no live database is required. K
 - Movement request creation and validation
 - Multi-step approval flow (head approval → destination approval → finalization)
 - Stock quantity updates on movement finalization
-- Rejection handling and status guards
+- Rejection handling and status guards (stage-gated, location-ownership enforced)
+- Post-approval recall at `APPROVED_READY_FOR_FINALIZATION`
 - Inactive user / inactive goods rejection
-- Duplicate request prevention
+- Duplicate request prevention and goods-scoped in-flight lock
 
 See `simulation-test.md` in the project root for documented end-to-end test scenarios and results.
 
