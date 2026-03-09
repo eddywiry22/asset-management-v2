@@ -6,23 +6,44 @@ This review compares:
 - active Sequelize models under `backend/models`
 - historical migrations under `backend/migrations`
 
-## Key Findings
+## What was wrong
 
-1. **Conflicting historical create-table migrations exist** for the same logical tables (`goods`, `locations`, `movement_requests`, `audit_logs`, `categories`, `vendors`).
-2. **Canonical stock table is `stock`**, but an earlier migration creates legacy `stocks`.
-3. `stock_adjustments.stock_id` was originally defined to reference **`stocks.id`**, while services and models use **`stock.id`**.
-4. A reconciliation migration (`20260310000001-reconcile-stock-table.js`) merges rows but does **not** re-point the foreign key on `stock_adjustments.stock_id`.
+Historically, migrations contained multiple `createTable` definitions for the same logical tables (`goods`, `locations`, `movement_requests`, `audit_logs`, `categories`, `vendors`, `movements`, and stock variants). This caused two practical problems:
 
-## Why FK Errors Happen
+1. **Fresh migration instability** (`table already exists`), depending on execution order.
+2. **Schema drift** from canonical models/services because different variants created different columns and constraints.
 
-In environments where both `stocks` and `stock` exist, inserts into `stock_adjustments` may fail with FK violations if `stock_id` points to `stock.id` rows while the FK still references `stocks.id`.
+A critical mismatch also existed around stock:
 
-## Remediation Implemented
+- canonical runtime uses `stock` (model/service level)
+- historical chain could keep FK `stock_adjustments.stock_id -> stocks.id`
 
-Migration `20260310000004-align-stock-adjustments-fk-with-stock-table.js` now:
+## Cleanup performed
 
-1. Merges missing rows from `stocks` into `stock` when both tables are present.
-2. Detects and removes existing FK constraints on `stock_adjustments.stock_id` (constraint names vary by MySQL environment).
-3. Recreates the FK so `stock_adjustments.stock_id -> stock.id`.
+Removed redundant/legacy migrations that recreated already-defined tables with conflicting schemas:
 
-This aligns migrations with the canonical schema used by services/models.
+- `20240101000003-create-goods.js`
+- `20240101000003-create-locations.js`
+- `20240101000003-create-movement-requests.js`
+- `20240101000005-create-movements.js`
+- `20240101000006-create-movement-requests.js`
+- `20240102000001-create-audit-logs.js`
+- `20240102000001-create-movements.js`
+- `20240102000002-create-audit-logs.js`
+- `20240102000002-create-categories.js`
+- `20240102000003-create-vendors.js`
+- `20240102000004-create-locations.js`
+- `20240102000007-create-goods.js`
+- `20240102000008-create-stock.js`
+
+Kept a single migration path per table family, then relied on later normalization/reconciliation migrations for convergence to canonical schema.
+
+## FK remediation retained
+
+Migration `20260310000004-align-stock-adjustments-fk-with-stock-table.js` is retained and required. It:
+
+1. merges missing legacy rows from `stocks` into `stock` (when both exist),
+2. drops existing FK constraints on `stock_adjustments.stock_id` regardless of generated constraint name,
+3. recreates FK as `stock_adjustments.stock_id -> stock.id`.
+
+This aligns the database with canonical backend models and services.
