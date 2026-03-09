@@ -5,12 +5,13 @@ services:
     image: mysql:8.0
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASS}
-      MYSQL_DATABASE: ${DB_NAME}
+      # Canonical defaults for local bring-up. Override via root .env as needed.
+      MYSQL_ROOT_PASSWORD: ${DB_PASS:-your_mysql_password}
+      MYSQL_DATABASE: ${DB_NAME:-asset_management_dev}
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASS}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASS:-your_mysql_password}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,6 +30,10 @@ services:
     environment:
       NODE_ENV: production
       DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-asset_management_dev}
+      DB_USER: ${DB_USER:-root}
+      DB_PASS: ${DB_PASS:-your_mysql_password}
     ports:
       - "5000:5000"
     networks:
@@ -39,6 +44,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        # Browser-side API base URL
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5000/api}
     restart: unless-stopped
     depends_on:
