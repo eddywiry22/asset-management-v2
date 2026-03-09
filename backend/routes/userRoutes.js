@@ -6,13 +6,16 @@ const validate = require('../middlewares/validate');
 
 const router = Router();
 
-const VALID_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+// All roles that exist in the system (used for listing/filtering)
+const ALL_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+// Roles assignable via the API; manager must be set directly in the DB
+const ASSIGNABLE_ROLES = ['admin', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
 
 const createSchema = Joi.object({
   name: Joi.string().max(100).required(),
   email: Joi.string().email().max(150).required(),
   password: Joi.string().min(8).max(255).required(),
-  role: Joi.string().valid(...VALID_ROLES).default('viewer'),
+  role: Joi.string().valid(...ASSIGNABLE_ROLES).default('viewer'),
   phoneNumber: Joi.string().max(20).allow('', null).optional(),
   locationId: Joi.number().integer().positive().allow(null).optional(),
   status: Joi.string().valid('ACTIVE', 'INACTIVE').default('ACTIVE'),
@@ -22,7 +25,7 @@ const updateSchema = Joi.object({
   name: Joi.string().max(100).optional(),
   email: Joi.string().email().max(150).optional(),
   password: Joi.string().min(8).max(255).optional(),
-  role: Joi.string().valid(...VALID_ROLES).optional(),
+  role: Joi.string().valid(...ASSIGNABLE_ROLES).optional(),
   phoneNumber: Joi.string().max(20).allow('', null).optional(),
   locationId: Joi.number().integer().positive().allow(null).optional(),
   status: Joi.string().valid('ACTIVE', 'INACTIVE').optional(),
@@ -32,7 +35,7 @@ const querySchema = Joi.object({
   search: Joi.string().allow('').optional(),
   page: Joi.number().integer().min(1).optional(),
   limit: Joi.number().integer().min(1).max(100).optional(),
-  role: Joi.string().valid(...VALID_ROLES).optional(),
+  role: Joi.string().valid(...ALL_ROLES).optional(),
 });
 
 // All user management routes require authentication + admin or warehouse_head role

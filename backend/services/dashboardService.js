@@ -1,5 +1,5 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Stock, Goods, Location, Movement, MovementRequest, MovementHeader, MovementDetail, StockAdjustment, sequelize } = require('../models');
+const { Stock, Goods, Location, MovementRequest, MovementHeader, MovementDetail, StockAdjustment, sequelize } = require('../models');
 
 /**
  * Build a base WHERE clause for date-range filtering on createdAt.
@@ -54,40 +54,57 @@ const getStockOverview = async ({ locationId, goodId } = {}) => {
 };
 
 /**
- * Movement Report – list of movements from the legacy Movement model.
- * BUG-R8-03 fix: removed invalid Good/Goods include (Movement has no goods FK;
- * it stores asset_name as a plain string). Only Location associations are valid.
- * Note: legacy Movement table stores locations as plain strings (from_location,
- * to_location), not FKs — the Location includes below will always return null.
+ * Movement Report – one row per MovementDetail line, sourced from the active
+ * MovementHeader workflow (replaces the legacy Movement table query).
  */
 const getMovementReport = async ({ locationId, startDate, endDate } = {}) => {
   const where = buildDateWhere({ startDate, endDate });
 
-  const movements = await Movement.findAll({
+  const headers = await MovementHeader.findAll({
     where,
+    include: [
+      { model: Location, as: 'originLocation', attributes: ['id', 'name'] },
+      { model: Location, as: 'destinationLocation', attributes: ['id', 'name'] },
+      {
+        model: MovementDetail,
+        as: 'details',
+        include: [{ model: Goods, as: 'goods', attributes: ['id', 'name', 'sku', 'unit', 'category'] }],
+      },
+    ],
     order: [['createdAt', 'DESC']],
   });
 
   const filtered = locationId
-    ? movements.filter(
-        (m) =>
-          (m.fromLocationId && m.fromLocationId == locationId) ||
-          (m.toLocationId && m.toLocationId == locationId)
+    ? headers.filter(
+        (h) =>
+          h.originLocationId == locationId ||
+          h.destinationLocationId == locationId
       )
-    : movements;
+    : headers;
+
+  const movements = [];
+  for (const h of filtered) {
+    for (const d of h.details ?? []) {
+      movements.push({
+        id: h.id,
+        movementNumber: h.movementNumber,
+        date: h.createdAt,
+        fromLocation: h.originLocation,
+        toLocation: h.destinationLocation,
+        goods: d.goods,
+        quantity: parseFloat(d.quantity),
+        status: h.status,
+        notes: h.notes,
+      });
+    }
+  }
 
   return {
     summary: {
       total: filtered.length,
+      lines: movements.length,
     },
-    movements: filtered.map((m) => ({
-      id: m.id,
-      assetName: m.asset_name,
-      fromLocation: m.from_location,
-      toLocation: m.to_location,
-      status: m.status,
-      purpose: m.purpose,
-    })),
+    movements,
   };
 };
 
