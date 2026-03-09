@@ -4,7 +4,7 @@ const AppError = require('../utils/AppError');
 
 const getLogs = async (req, res, next) => {
   try {
-    const { module, user_id, date_from, date_to, page, limit } = req.query;
+    const { entity, user_id, date_from, date_to, page, limit } = req.query;
 
     const parsedPage = parseInt(page, 10) || 1;
     const parsedLimit = Math.min(parseInt(limit, 10) || 20, 100);
@@ -12,7 +12,7 @@ const getLogs = async (req, res, next) => {
     if (parsedPage < 1) throw new AppError('Page must be >= 1', 400);
 
     const result = await auditLogService.getAuditLogs({
-      moduleName: module || null,
+      entity: entity || null,
       userId: user_id ? parseInt(user_id, 10) : null,
       dateFrom: date_from || null,
       dateTo: date_to || null,
@@ -33,8 +33,8 @@ const getLogs = async (req, res, next) => {
 
 const getModules = async (req, res, next) => {
   try {
-    const modules = await auditLogService.getModuleNames();
-    return success(res, modules, 'Modules retrieved');
+    const entities = await auditLogService.getEntityNames();
+    return success(res, entities, 'Entities retrieved');
   } catch (err) {
     return next(err);
   }
