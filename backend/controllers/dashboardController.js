@@ -94,12 +94,12 @@ const exportMovements = async (req, res, next) => {
     const { movements } = await dashboardService.getMovementReport(filters);
 
     const fields = [
-      { label: 'Date', value: 'date' },
-      { label: 'Type', value: 'type' },
-      { label: 'Good', value: 'good.name' },
-      { label: 'SKU', value: 'good.sku' },
-      { label: 'Category', value: 'good.category' },
-      { label: 'Unit', value: 'good.unit' },
+      { label: 'Date', value: (row) => row.date ? new Date(row.date).toISOString().split('T')[0] : '' },
+      { label: 'Movement #', value: 'movementNumber' },
+      { label: 'Good', value: 'goods.name' },
+      { label: 'SKU', value: 'goods.sku' },
+      { label: 'Category', value: 'goods.category' },
+      { label: 'Unit', value: 'goods.unit' },
       { label: 'Quantity', value: 'quantity' },
       { label: 'From Location', value: (row) => row.fromLocation?.name || '' },
       { label: 'To Location', value: (row) => row.toLocation?.name || '' },
