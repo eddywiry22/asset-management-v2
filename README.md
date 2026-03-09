@@ -208,6 +208,13 @@ docker-compose up --build
 | GET    | `/api/stock-adjustments` | Yes           | List adjustments        |
 | POST   | `/api/stock-adjustments` | Admin/Head    | Create stock adjustment |
 
+**Validation rules for `POST /api/stock-adjustments`:**
+- `adjustment_type` must be `add` or `subtract` (the `set` type is not supported)
+- Target **goods** must have `status = ACTIVE` — returns HTTP 422 otherwise
+- Target **location** must have `status = ACTIVE` — returns HTTP 422 otherwise
+- If the target location is a direct participant (origin or destination) of an active movement that contains the requested goods, the request is blocked with HTTP 409. Locations that are **not** involved in that movement are unaffected and may adjust their own stock freely.
+- `warehouse_operator` may only submit adjustments for their own assigned location
+
 ### Movements
 
 | Method | Endpoint                              | Auth required                    | Description                                              |
@@ -362,6 +369,8 @@ Tests mock all Sequelize models and services, so no live database is required. K
 - Post-approval recall at `APPROVED_READY_FOR_FINALIZATION`
 - Inactive user / inactive goods rejection
 - Duplicate request prevention and goods-scoped in-flight lock
+- Stock adjustment blocked when target location is `INACTIVE` (HTTP 422)
+- Stock adjustment at an uninvolved location allowed while an active movement runs between two other locations (location-scoped active movement guard)
 
 See `simulation-test.md` in the project root for documented end-to-end test scenarios and results.
 

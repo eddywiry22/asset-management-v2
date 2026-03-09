@@ -79,6 +79,12 @@ requests or movements. The `Goods` model enforces this through a Sequelize
 `Goods.unscoped()` or `Goods.scope('withInactive')` only when admin access
 to all goods is explicitly required.
 
+A location with `status = INACTIVE` also cannot be the target of a stock
+adjustment. `stockAdjustmentService.requestAdjustment` fetches the `Location`
+by `location_id` and throws HTTP 422 if `location.status !== 'ACTIVE'` before
+any stock record is created or modified. This check mirrors the equivalent
+goods ACTIVE check in the same function.
+
 ### Users
 
 If `user.status = INACTIVE` or `user.isActive = false`, login must be
@@ -106,6 +112,24 @@ type has been removed because it has no computable signed delta (the pre-set
 quantity is not stored), making it incompatible with period summary reporting.
 Adjustment `reviewed_at` is used as the effective date for period filtering.
 
+**Active movement guard — location-scoped:** A stock adjustment request is
+blocked (HTTP 409) when the target location is itself a participant in an
+active `MovementHeader` (status ∈ `ACTIVE_MOVEMENT_STATUSES`) that contains
+the requested goods. Crucially, the guard is **location-scoped**: an active
+movement between Location A and Location B does not block Location C from
+adjusting its own stock of the same goods, because Location C is not a
+participant in that movement. The `MovementHeader` query filters by
+`originLocationId` **or** `destinationLocationId` matching the adjustment's
+`location_id` in addition to the goods match on `MovementDetail.goodsId`.
+
+The validation order in `requestAdjustment` is:
+1. Adjustment type (`add` / `subtract` only)
+2. Goods exists and is `ACTIVE`
+3. Location exists and is `ACTIVE`
+4. Stock record found or created
+5. Location is not a participant in an active movement containing these goods
+6. Subtract pre-validation (quantity ≤ current stock)
+
 ### Movements
 
 Movement cannot occur if origin stock is insufficient.
@@ -126,6 +150,20 @@ The following entities support **paranoid (soft) delete** via Sequelize's
 - `vendors`
 
 Soft-deleted records are excluded from all standard queries automatically.
+
+### Location Deactivation and Deletion Guards
+
+`locationService.update` and `locationService.remove` block deactivation or
+soft-deletion of a location when any **active** `MovementHeader` references it
+as origin or destination (status ∈ `ACTIVE_MOVEMENT_STATUSES` from
+`utils/constants.js`). The same count is returned by `locationService.getImpact`
+as `blockingMovements` for the impact-preview UI.
+
+**Important:** All three guards query the `MovementHeader` model (columns
+`originLocationId` / `destinationLocationId`) with `ACTIVE_MOVEMENT_STATUSES`.
+The legacy `MovementRequest` model and its statuses `PENDING / APPROVED /
+IN_TRANSIT` are **not used** for these checks. Any future code that adds
+location-blocking logic must reference `MovementHeader`, not `MovementRequest`.
 
 ### Active Location Dropdown
 
@@ -202,9 +240,16 @@ Two checks are applied inside the `createMovement` transaction:
 
 2. **Goods-scoped in-flight lock** (`findActiveMovementForGoods`) — if any of the
    requested goods appear in **any** active movement (regardless of origin/destination),
-   the new request is blocked. This matches the equivalent lock already applied in
-   `stockAdjustmentService` and prevents the same goods from being simultaneously
+   the new request is blocked. This prevents the same goods from being simultaneously
    committed to multiple movements.
+
+> **Note:** The equivalent guard in `stockAdjustmentService.requestAdjustment` is
+> **location-scoped** (not globally goods-scoped). It blocks only the locations that
+> are direct participants (origin or destination) of the active movement, intentionally
+> allowing uninvolved locations to adjust their own independent stock of the same goods.
+> Movement creation uses the broader goods-only lock because committing stock to two
+> simultaneous movements from any pair of locations is always unsafe; a manual adjustment
+> at an uninvolved location is safe because it does not affect in-transit quantities.
 
 ---
 
