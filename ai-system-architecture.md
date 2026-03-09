@@ -146,8 +146,8 @@ Backed by `MovementRequest` model.
 Status ENUM: `PENDING → APPROVED → IN_TRANSIT → COMPLETED | CANCELLED | REJECTED`
 
 Approval roles:
-- `warehouse_head` approves PENDING requests
-- `destination_operator` confirms IN_TRANSIT requests for their location
+- `warehouse_head` approves PENDING requests → IN_TRANSIT
+- `warehouse_operator` whose `locationId` matches the request's `toLocationId` confirms IN_TRANSIT requests for their location → APPROVED
 
 ### 2. Movements (Full Workflow)
 
@@ -155,42 +155,41 @@ Used via `/api/movements`. Backed by `MovementHeader` + `MovementDetail` models.
 Supports multiple goods per movement via line items.
 
 ```
-1. Operator creates movement
+1. warehouse_operator (origin) creates movement request
    MovementHeader.status = PENDING_HEAD_APPROVAL
 
-2. Warehouse Head approves (origin location)
+2. warehouse_head (origin location) approves
    MovementHeader.status = PENDING_DESTINATION_APPROVAL
 
-3. Destination-side actor approves (destination location)
+3. warehouse_operator (destination location) approves
    MovementHeader.status = APPROVED_READY_FOR_FINALIZATION
 
-4. Destination-side actor finalizes — stock updated on both sides
+4. warehouse_operator or warehouse_head (destination location) finalizes
+   — stock deducted from origin, added to destination
    MovementHeader.status = COMPLETED
 ```
 
-Rejection at any **PENDING_*** step sets status to `REJECTED` and records
-`rejectedById`, `rejectedAt`, and `rejectionReason` on the header.
+**Rejection** (`POST /api/movements/:id/reject`): valid at `PENDING_HEAD_APPROVAL` or
+`PENDING_DESTINATION_APPROVAL` only. Sets status to `REJECTED` and records `rejectedById`,
+`rejectedAt`, and `rejectionReason`.
 
-**Recall** — a dedicated `POST /api/movements/:id/recall` endpoint handles the
-`APPROVED_READY_FOR_FINALIZATION → REJECTED` transition. This is distinct from
-rejection, which is blocked at that stage. Recall reuses the same `rejectedById`,
-`rejectedAt`, and `rejectionReason` fields.
+**Recall** (`POST /api/movements/:id/recall`): valid at `APPROVED_READY_FOR_FINALIZATION`
+only. Used when a fully-approved movement must be halted before stock is touched.
+Sets status to `REJECTED` with a mandatory reason. Accessible to origin `warehouse_head`,
+destination `warehouse_head`, destination `warehouse_operator`, `admin`, and `manager`.
 
 ### Approval Ownership Rules
 
-Authority is **location-ownership-based**: the route gate checks the role, the
-service layer validates the user's `locationId` against the movement's origin or
-destination. `admin` is always exempt from location checks.
+| Step | Role required | Location constraint |
+|------|---------------|---------------------|
+| Head approval | `warehouse_head` | Must belong to the **origin** location (`user.locationId === header.originLocationId`). `admin` and `manager` are exempt. |
+| Destination approval | `warehouse_operator` | Must belong to the **destination** location (`user.locationId === header.destinationLocationId`). `admin` and `manager` are exempt. |
+| Finalization | `warehouse_operator` or `warehouse_head` | Must belong to the **destination** location (`user.locationId === header.destinationLocationId`). `admin` and `manager` are exempt. |
+| Recall (post-approval) | `warehouse_head` or `warehouse_operator` | Either the **origin** `warehouse_head` or any actor belonging to the **destination** location. `admin` and `manager` are exempt. |
 
-| Action | Allowed roles | Location constraint |
-|--------|---------------|---------------------|
-| Create movement | `admin`, `warehouse_head`, `warehouse_operator` | None |
-| Head approval | `admin`, `warehouse_head` | User must belong to **origin** location |
-| Destination approval | `admin`, `destination_operator`, `warehouse_operator` | User must belong to **destination** location |
-| Finalize | `admin`, `warehouse_operator`, `warehouse_head` | User must belong to **destination** location |
-| Reject (PENDING_* stages) | `admin`, `warehouse_head` (origin), `warehouse_operator` / `destination_operator` (dest.) | Origin-assigned head rejects at `PENDING_HEAD_APPROVAL`; destination-assigned actors reject at either pending stage |
-| Recall (APPROVED_READY stage) | `admin`, `manager`, `warehouse_head`, `warehouse_operator`, `destination_operator` | Origin/destination warehouse_head, or any destination-assigned operator |
-| Cancel (own request) | `admin`, `warehouse_operator` | None (requester identity check in service) |
+> **Key design principle:** There is no separate `destination_operator` role. A `warehouse_operator`
+> assigned to the destination warehouse fulfils the destination-side role automatically through
+> location ownership checks (`user.locationId === header.destinationLocationId`).
 
 ---
 
@@ -229,14 +228,19 @@ Admin module routes and their pages:
 
 ## ROLE DEFINITIONS
 
-| Role                  | Key Capabilities                                                                                            |
-|-----------------------|-------------------------------------------------------------------------------------------------------------|
-| `admin`               | Full access; manage users, locations, categories, vendors; exempt from location-ownership checks            |
-| `warehouse_head`      | Head approval (origin), destination approval + finalize + recall (destination), manage master data, audit   |
-| `warehouse_operator`  | Create movements, destination approval + finalize (if at dest. location), reject/recall (dest.), cancel own |
-| `destination_operator`| Destination approval, reject and recall at destination location                                             |
-| `manager`             | View/create/edit assets and categories, create and approve movements, view reports                          |
-| `viewer`              | Read-only access to dashboard, assets, categories, reports, and movements                                   |
+| Role                 | Key Capabilities                                                                                                  |
+|----------------------|-------------------------------------------------------------------------------------------------------------------|
+| `admin`              | Full access; manage users, locations, categories, vendors                                                         |
+| `manager`            | View and approve movements; no admin module access                                                                |
+| `viewer`             | Read-only access to dashboard, assets, and movements                                                              |
+| `warehouse_head`     | Head-approves and rejects/recalls movements at their origin location; manages master data and audit log           |
+| `warehouse_operator` | Creates movement requests from their origin location; acts as destination approver and finalizer for movements arriving at their assigned location (`user.locationId === movement.destinationLocationId`) |
+
+> **No `destination_operator` role exists.** The distinction between "origin operator" and
+> "destination operator" is purely location-based: a `warehouse_operator` assigned to Warehouse A
+> originates movements from A; a `warehouse_operator` assigned to Warehouse B approves and finalizes
+> movements destined for B. The same role name covers both sides — the `locationId` field determines
+> which side of a given movement the user acts on.
 
 Permissions are also stored in the `permissions` table per role per module
 with boolean flags: `can_view`, `can_create`, `can_edit`, `can_delete`,
@@ -382,7 +386,7 @@ erDiagram
         varchar phone_number
         varchar email UK
         varchar password
-        enum role "admin|warehouse_head|warehouse_operator|destination_operator|manager|viewer"
+        enum role "admin|warehouse_head|warehouse_operator|manager|viewer"
         int role_id FK
         int location_id FK
         enum status "ACTIVE|INACTIVE"

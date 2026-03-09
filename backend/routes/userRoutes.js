@@ -7,9 +7,9 @@ const validate = require('../middlewares/validate');
 const router = Router();
 
 // All roles that exist in the system (used for listing/filtering)
-const ALL_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+const ALL_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head'];
 // Roles assignable via the API; manager must be set directly in the DB
-const ASSIGNABLE_ROLES = ['admin', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+const ASSIGNABLE_ROLES = ['admin', 'viewer', 'warehouse_operator', 'warehouse_head'];
 
 const createSchema = Joi.object({
   name: Joi.string().max(100).required(),

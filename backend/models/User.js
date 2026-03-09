@@ -36,8 +36,7 @@ module.exports = (sequelize, DataTypes) => {
           'manager',
           'viewer',
           'warehouse_operator',
-          'warehouse_head',
-          'destination_operator'
+          'warehouse_head'
         ),
         allowNull: false,
         defaultValue: 'viewer',

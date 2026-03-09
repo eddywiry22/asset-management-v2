@@ -50,11 +50,6 @@ const PERMISSIONS = {
     admin:      ['view', 'create', 'edit', 'delete'],
     audit:      ['view'],
   },
-  destination_operator: {
-    dashboard:  ['view'],
-    assets:     ['view'],
-    movements:  ['view', 'approve'],
-  },
 };
 
 /**

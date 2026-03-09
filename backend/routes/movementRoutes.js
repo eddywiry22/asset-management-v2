@@ -72,13 +72,12 @@ router.post(
   movementController.approveHead
 );
 
-// POST /api/movements/:id/approve-dest – destination-side actor approves second stage
-// BUG-R9-01 fix: warehouse_operator at the destination location is now also
-// permitted. Authority is derived from locationId ownership in the service layer,
-// not from a distinct role name.
+// POST /api/movements/:id/approve-dest – destination-side actor approves second stage.
+// A warehouse_operator whose locationId matches the movement's destinationLocationId
+// acts as the destination approver — no separate destination_operator role needed.
 router.post(
   '/:id/approve-dest',
-  authorize('admin', 'destination_operator', 'warehouse_operator'),
+  authorize('admin', 'warehouse_operator'),
   movementController.approveDest
 );
 
@@ -94,13 +93,12 @@ router.post(
   movementController.finalize
 );
 
-// POST /api/movements/:id/reject – reject with mandatory reason (pre-finalization stages only)
-// BUG-R9-01 / BUG-R9-03 fix: warehouse_operator at the destination location may
-// now reject at PENDING_HEAD_APPROVAL or PENDING_DESTINATION_APPROVAL.
-// Location ownership and stage guards are enforced in the service layer.
+// POST /api/movements/:id/reject – reject with mandatory reason (pre-finalization stages only).
+// warehouse_operator at the destination location may reject at PENDING_HEAD_APPROVAL
+// or PENDING_DESTINATION_APPROVAL. Location ownership and stage guards are in the service.
 router.post(
   '/:id/reject',
-  authorize('admin', 'warehouse_head', 'destination_operator', 'warehouse_operator'),
+  authorize('admin', 'warehouse_head', 'warehouse_operator'),
   validate(rejectSchema),
   movementController.reject
 );
@@ -111,7 +109,7 @@ router.post(
 // Accessible to origin/destination warehouse_head, destination operators, admin.
 router.post(
   '/:id/recall',
-  authorize('admin', 'manager', 'warehouse_head', 'warehouse_operator', 'destination_operator'),
+  authorize('admin', 'manager', 'warehouse_head', 'warehouse_operator'),
   validate(rejectSchema),
   movementController.recall
 );

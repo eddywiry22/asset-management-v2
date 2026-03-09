@@ -427,10 +427,10 @@ const approveByDestination = async (userId, movementId, userLocationId, userRole
   // effectively dead. Privileged roles are explicitly exempted from the
   // location-ownership requirement.
   //
-  // BUG-R9-01 fix: destination approval authority is now derived from location
-  // ownership (userLocationId === destinationLocationId) rather than from a
-  // distinct role name. Both warehouse_operator and destination_operator at the
-  // destination warehouse may approve — the route gate enforces the role list.
+  // BUG-R9-01 fix: destination approval authority is derived from location
+  // ownership (userLocationId === destinationLocationId). A warehouse_operator
+  // whose locationId matches the movement's destination acts as the destination
+  // approver — no separate destination_operator role is required.
   //
   // BUG-05: fail-closed — a null/missing locationId is treated as a mismatch
   // for non-privileged users; they cannot bypass the ownership check.
@@ -574,10 +574,9 @@ const rejectMovement = async (userId, movementId, reason, userRole, userLocation
           403
         );
       }
-    } else if (userRole === 'destination_operator' || userRole === 'warehouse_operator') {
-      // BUG-R9-03 fix: destination-side actors (destination_operator or
-      // warehouse_operator assigned to the destination location) may reject at
-      // PENDING_HEAD_APPROVAL (early/pre-head-approval rejection) or
+    } else if (userRole === 'warehouse_operator') {
+      // BUG-R9-03 fix: a warehouse_operator assigned to the destination location
+      // may reject at PENDING_HEAD_APPROVAL (early rejection) or
       // PENDING_DESTINATION_APPROVAL. Location ownership is mandatory —
       // only the operator whose locationId matches the destination may act.
       if (!userLocationId || userLocationId !== movement.destinationLocationId) {
@@ -664,7 +663,7 @@ const cancelMovement = async (userId, movementId) => {
  * "recall" transition for that stage, accessible to:
  *   - origin warehouse_head  (locationId === originLocationId)
  *   - destination warehouse_head (locationId === destinationLocationId)
- *   - destination warehouse_operator / destination_operator
+ *   - destination warehouse_operator (locationId === destinationLocationId)
  *   - admin / manager (no location restriction)
  *
  * Status transitions to REJECTED with the supplied reason and a RECALL audit
@@ -686,10 +685,10 @@ const recallMovement = async (userId, movementId, reason, userRole, userLocation
   if (!isPrivilegedRole) {
     // Origin warehouse_head may recall (they gave first approval)
     const isOriginHead = userRole === 'warehouse_head' && userLocationId === movement.originLocationId;
-    // Destination actors (warehouse_head, warehouse_operator, destination_operator) may recall
+    // Destination actors (warehouse_head or warehouse_operator at destination) may recall
     const isDestinationActor =
       userLocationId === movement.destinationLocationId &&
-      ['warehouse_head', 'warehouse_operator', 'destination_operator'].includes(userRole);
+      ['warehouse_head', 'warehouse_operator'].includes(userRole);
 
     if (!isOriginHead && !isDestinationActor) {
       throw new AppError(

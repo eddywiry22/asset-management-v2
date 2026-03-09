@@ -28,7 +28,7 @@ const EMPTY_FORM = { asset_name: '', from_location: '', to_location: '', purpose
 export default function MovementsPage() {
   const { user } = useAuth();
 
-  const canApproveOrReject = ['admin', 'warehouse_head', 'destination_operator'].includes(user?.role);
+  const canApproveOrReject = ['admin', 'warehouse_head', 'warehouse_operator'].includes(user?.role);
 
   // List state
   const [movements, setMovements] = useState([]);

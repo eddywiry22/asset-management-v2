@@ -3,10 +3,10 @@ import userService from '@/services/userService';
 import locationService from '@/services/locationService';
 import { useAuth } from '@/contexts/AuthContext';
 
-// All roles — used for the filter dropdown so existing manager users remain searchable
-const ALL_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+// All roles — used for the filter dropdown so existing users remain searchable
+const ALL_ROLES = ['admin', 'manager', 'viewer', 'warehouse_operator', 'warehouse_head'];
 // Roles assignable via the UI form; manager must be set directly in the DB
-const ASSIGNABLE_ROLES = ['admin', 'viewer', 'warehouse_operator', 'warehouse_head', 'destination_operator'];
+const ASSIGNABLE_ROLES = ['admin', 'viewer', 'warehouse_operator', 'warehouse_head'];
 
 const EMPTY_FORM = {
   name: '',

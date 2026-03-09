@@ -102,12 +102,12 @@ export default function MovementDetailPage() {
   // Per-action role lists (backend enforces location ownership; frontend shows
   // the button for any eligible role and lets the API return 403 if mismatched).
   const canApproveHead = ['admin', 'warehouse_head'].includes(user?.role);
-  const canApproveDest = ['admin', 'destination_operator', 'warehouse_operator'].includes(user?.role);
+  const canApproveDest = ['admin', 'warehouse_operator'].includes(user?.role);
   // BUG-R9-02 fix: warehouse_head at destination may also finalize
   const canFinalize    = ['admin', 'warehouse_operator', 'warehouse_head'].includes(user?.role);
-  const canReject      = ['admin', 'warehouse_head', 'destination_operator', 'warehouse_operator'].includes(user?.role);
+  const canReject      = ['admin', 'warehouse_head', 'warehouse_operator'].includes(user?.role);
   // BUG-R9-04/05 fix: recall is the post-approval halt action
-  const canRecall      = ['admin', 'manager', 'warehouse_head', 'warehouse_operator', 'destination_operator'].includes(user?.role);
+  const canRecall      = ['admin', 'manager', 'warehouse_head', 'warehouse_operator'].includes(user?.role);
 
   const load = async () => {
     setIsLoading(true);
