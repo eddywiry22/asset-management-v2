@@ -5,23 +5,17 @@ const bcrypt = require('bcrypt');
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, _Sequelize) {
-    // Fetch role IDs
     const roles = await queryInterface.sequelize.query(
-      `SELECT id, name FROM roles WHERE name IN ('Warehouse Admin', 'Warehouse Head', 'Warehouse Operator')`,
+      `SELECT id, name FROM roles WHERE name IN ('admin', 'warehouse_head', 'warehouse_operator')`,
       { type: queryInterface.sequelize.QueryTypes.SELECT }
     );
+    const roleMap = Object.fromEntries(roles.map((r) => [r.name, r.id]));
 
-    const roleMap = {};
-    roles.forEach((r) => { roleMap[r.name] = r.id; });
-
-    // Fetch location IDs
     const locations = await queryInterface.sequelize.query(
       `SELECT id, name FROM locations WHERE name IN ('Main Warehouse', 'Secondary Warehouse')`,
       { type: queryInterface.sequelize.QueryTypes.SELECT }
     );
-
-    const locationMap = {};
-    locations.forEach((l) => { locationMap[l.name] = l.id; });
+    const locationMap = Object.fromEntries(locations.map((l) => [l.name, l.id]));
 
     const now = new Date();
 
@@ -32,8 +26,8 @@ module.exports = {
         email: 'warehouse.admin@example.com',
         password: await bcrypt.hash('Admin@1234', 12),
         role: 'admin',
-        role_id: roleMap['Warehouse Admin'],
-        location_id: locationMap['Main Warehouse'],
+        role_id: roleMap.admin || null,
+        location_id: locationMap['Main Warehouse'] || null,
         status: 'ACTIVE',
         isActive: true,
         lastLoginAt: null,
@@ -41,13 +35,27 @@ module.exports = {
         updatedAt: now,
       },
       {
-        name: 'Head Warehouse',
+        name: 'Head Warehouse (Main)',
         phone_number: '+1-555-001-0002',
-        email: 'warehouse.head@example.com',
+        email: 'warehouse.head.main@example.com',
         password: await bcrypt.hash('Head@1234', 12),
-        role: 'manager',
-        role_id: roleMap['Warehouse Head'],
-        location_id: locationMap['Main Warehouse'],
+        role: 'warehouse_head',
+        role_id: roleMap.warehouse_head || null,
+        location_id: locationMap['Main Warehouse'] || null,
+        status: 'ACTIVE',
+        isActive: true,
+        lastLoginAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        name: 'Head Warehouse (Secondary)',
+        phone_number: '+1-555-001-0005',
+        email: 'warehouse.head.secondary@example.com',
+        password: await bcrypt.hash('Head@1234', 12),
+        role: 'warehouse_head',
+        role_id: roleMap.warehouse_head || null,
+        location_id: locationMap['Secondary Warehouse'] || null,
         status: 'ACTIVE',
         isActive: true,
         lastLoginAt: null,
@@ -59,9 +67,9 @@ module.exports = {
         phone_number: '+1-555-001-0003',
         email: 'operator.one@example.com',
         password: await bcrypt.hash('Operator@1234', 12),
-        role: 'viewer',
-        role_id: roleMap['Warehouse Operator'],
-        location_id: locationMap['Main Warehouse'],
+        role: 'warehouse_operator',
+        role_id: roleMap.warehouse_operator || null,
+        location_id: locationMap['Main Warehouse'] || null,
         status: 'ACTIVE',
         isActive: true,
         lastLoginAt: null,
@@ -73,9 +81,9 @@ module.exports = {
         phone_number: '+1-555-001-0004',
         email: 'operator.two@example.com',
         password: await bcrypt.hash('Operator@1234', 12),
-        role: 'viewer',
-        role_id: roleMap['Warehouse Operator'],
-        location_id: locationMap['Secondary Warehouse'],
+        role: 'warehouse_operator',
+        role_id: roleMap.warehouse_operator || null,
+        location_id: locationMap['Secondary Warehouse'] || null,
         status: 'ACTIVE',
         isActive: true,
         lastLoginAt: null,
@@ -89,7 +97,8 @@ module.exports = {
     await queryInterface.bulkDelete('users', {
       email: [
         'warehouse.admin@example.com',
-        'warehouse.head@example.com',
+        'warehouse.head.main@example.com',
+        'warehouse.head.secondary@example.com',
         'operator.one@example.com',
         'operator.two@example.com',
       ],

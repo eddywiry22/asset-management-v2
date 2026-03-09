@@ -178,7 +178,7 @@ const getStockChartData = async ({ locationId } = {}) => {
 
 /**
  * Movement Trends – daily totals over a date range (line chart).
- * Uses legacy Movement table. Returns empty data if table has no records.
+ * Uses MovementHeader (canonical movement workflow).
  */
 const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
   const end = endDate || new Date().toISOString().split('T')[0];
@@ -189,6 +189,12 @@ const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
   })();
 
   const where = { createdAt: { [Op.between]: [start, end] } };
+  if (locationId) {
+    where[Op.or] = [
+      { originLocationId: locationId },
+      { destinationLocationId: locationId },
+    ];
+  }
 
   const baseQuery = {
     where,
@@ -201,9 +207,7 @@ const getMovementTrends = async ({ locationId, startDate, endDate } = {}) => {
     raw: true,
   };
 
-  const movements = locationId
-    ? await Movement.findAll({ ...baseQuery, where: { ...where } })
-    : await Movement.findAll(baseQuery);
+  const movements = await MovementHeader.findAll(baseQuery);
 
   const dateMap = {};
   movements.forEach(({ date, total }) => {
