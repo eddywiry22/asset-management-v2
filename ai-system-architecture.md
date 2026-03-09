@@ -233,23 +233,36 @@ destination `warehouse_head`, destination `warehouse_operator`, `admin`, and `ma
 
 ## DUPLICATE MOVEMENT RULE
 
-Two checks are applied inside the `createMovement` transaction:
+Three checks are applied inside the `createMovement` transaction:
 
 1. **Route-scoped duplicate check** — if a non-finalized movement exists with
    the same origin, destination, and identical goods set, a new request is blocked.
 
 2. **Goods-scoped in-flight lock** (`findActiveMovementForGoods`) — if any of the
-   requested goods appear in **any** active movement (regardless of origin/destination),
-   the new request is blocked. This prevents the same goods from being simultaneously
-   committed to multiple movements.
+   requested goods appear in **any** active `MovementHeader` (regardless of
+   origin/destination), the new request is blocked. This prevents the same goods
+   from being simultaneously committed to multiple movements.
+
+3. **Pending stock adjustment lock** (`findPendingAdjustmentForGoods`) — if any of
+   the requested goods have a `pending` `StockAdjustment` at either the origin **or**
+   the destination location, the movement is blocked (HTTP 409). The operator must
+   approve or reject that adjustment before a movement can be created.
+   - **Why origin matters:** a pending adjustment may change the stock that the
+     movement is about to deduct, causing an incorrect origin balance.
+   - **Why destination matters:** a pending inbound adjustment at the destination
+     may conflict with the incoming movement quantity once the movement is finalised.
+   - The guard queries `StockAdjustment` where `status = 'pending'`, joining `Stock`
+     filtered to `goodsId IN requestedGoodsIds` AND
+     `locationId IN [originLocationId, destinationLocationId]`.
 
 > **Note:** The equivalent guard in `stockAdjustmentService.requestAdjustment` is
-> **location-scoped** (not globally goods-scoped). It blocks only the locations that
-> are direct participants (origin or destination) of the active movement, intentionally
-> allowing uninvolved locations to adjust their own independent stock of the same goods.
-> Movement creation uses the broader goods-only lock because committing stock to two
-> simultaneous movements from any pair of locations is always unsafe; a manual adjustment
-> at an uninvolved location is safe because it does not affect in-transit quantities.
+> **location-scoped** against `MovementHeader` (not globally goods-scoped). It blocks
+> only the locations that are direct participants (origin or destination) of an active
+> movement, intentionally allowing uninvolved locations to adjust their own independent
+> stock of the same goods. Movement creation uses the broader goods-only lock for
+> `MovementHeader` because committing stock to two simultaneous movements from any
+> pair of locations is always unsafe; a manual adjustment at an uninvolved location is
+> safe because it does not affect in-transit quantities.
 
 ---
 

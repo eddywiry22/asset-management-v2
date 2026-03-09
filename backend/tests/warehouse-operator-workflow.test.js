@@ -1161,30 +1161,27 @@ describe('Scenario 9 — Cross-Location Stock Adjustment Independence', () => {
 });
 
 // ===========================================================================
-// Scenario 10 — Movement Creation vs Pending Stock Adjustment (GAP ANALYSIS)
+// Scenario 10 — Movement Creation Blocked by Pending Stock Adjustment
 //
-// Workflow under test:
+// Workflow:
 //   1. A user creates a stock adjustment request at Location A for Goods A
 //      (status = 'pending' — not yet approved or rejected).
-//   2. A user from Location B attempts to create a movement request from
-//      Location B → Location A that includes Goods A.
-//   3. Expectation: the movement should be BLOCKED because Location A's
-//      Goods A stock is "locked" by the pending adjustment.
+//   2. A user from Location B attempts to create a movement from B → A that
+//      includes Goods A.
+//   3. The movement must be BLOCKED (HTTP 409) because Location A has a
+//      pending adjustment for Goods A that has not been resolved.
 //
-// FINDING — codebase does NOT support this workflow:
-//   createMovement guards only query MovementHeader records:
-//     • Route-scoped duplicate check  → MovementHeader.findAll
-//     • Goods-scoped in-flight lock   → MovementHeader.findOne (findActiveMovementForGoods)
-//   A pending StockAdjustment creates NO MovementHeader. Both guards therefore
-//   return null and the movement proceeds without any 409 error.
+// Implementation: findPendingAdjustmentForGoods() queries StockAdjustment
+//   where status='pending', joining Stock filtered to the requested goodsIds
+//   and locationId IN [originLocationId, destinationLocationId]. This is the
+//   third guard inside the createMovement transaction, executed after the
+//   route-scoped duplicate check and the goods-scoped in-flight lock.
 //
-//   The test named "EXPECTED (currently fails)" asserts the blocking 409 that
-//   the described workflow requires. It is marked with expect.assertions(1) so
-//   a silent pass cannot mask the failure. Running the suite will show this
-//   test failing with "Received promise resolved instead of rejected", which
-//   confirms the gap in the codebase.
+// Both directions are blocked: a pending adjustment at the origin location
+// is equally dangerous (the adjustment may change the stock that the
+// movement is about to deduct), so the guard covers origin AND destination.
 // ===========================================================================
-describe('Scenario 10 — Movement Creation vs Pending Stock Adjustment (Gap Analysis)', () => {
+describe('Scenario 10 — Movement Creation Blocked by Pending Stock Adjustment', () => {
   const GOODS_A_ID    = 10;
   const LOCATION_A_ID = 1;   // destination of the movement / location with pending adjustment
   const LOCATION_B_ID = 2;   // origin of the movement
@@ -1194,7 +1191,19 @@ describe('Scenario 10 — Movement Creation vs Pending Stock Adjustment (Gap Ana
   const locationA = { id: LOCATION_A_ID, name: 'Warehouse A', status: 'ACTIVE' };
   const locationB = { id: LOCATION_B_ID, name: 'Warehouse B', status: 'ACTIVE' };
 
-  /** Wire up all createMovement pre-checks to pass so we reach the duplicate/in-flight guards. */
+  // Pending adjustment record — only the fields the guard cares about
+  const pendingAdjAtA = {
+    id: 55,
+    status: 'pending',
+    stock: { goodsId: GOODS_A_ID, locationId: LOCATION_A_ID },
+  };
+  const pendingAdjAtB = {
+    id: 56,
+    status: 'pending',
+    stock: { goodsId: GOODS_A_ID, locationId: LOCATION_B_ID },
+  };
+
+  /** Wire all createMovement pre-checks so we reach the three guards inside the transaction. */
   const setupMovementPrechecks = () => {
     Location.findByPk
       .mockResolvedValueOnce(locationB)   // origin location check
@@ -1203,25 +1212,51 @@ describe('Scenario 10 — Movement Creation vs Pending Stock Adjustment (Gap Ana
     Goods.unscoped.mockReturnValue(Goods);
     Goods.findByPk.mockResolvedValue(goodsA);
 
-    // Origin stock at Location B: enough quantity
     Stock.findOne
       .mockResolvedValueOnce({ quantity: 100 })  // origin qty check inside loop
-      .mockResolvedValueOnce({ quantity: 20 });  // dest stock exists check (itemsNeedingDestStock)
+      .mockResolvedValueOnce({ quantity: 20 });  // dest stock exists check
 
     MovementHeader.count.mockResolvedValue(1);  // movement number generation
-  };
-
-  // -------------------------------------------------------------------------
-  // ACTUAL behaviour: movement IS created — pending adjustment is invisible
-  // -------------------------------------------------------------------------
-  test('ACTUAL — movement from B→A is created even though Location A has a pending stock adjustment for Goods A', async () => {
-    setupMovementPrechecks();
-
-    // Pending adjustment exists for Location A / Goods A — but createMovement
-    // never queries StockAdjustment, so this state has no effect.
-    // Both guards return null → no 409 thrown.
     MovementHeader.findAll.mockResolvedValue([]); // no route-scoped duplicate
     MovementHeader.findOne.mockResolvedValue(null); // no in-flight goods lock
+  };
+
+  test('blocks (409) when destination Location A has a pending adjustment for Goods A', async () => {
+    setupMovementPrechecks();
+
+    // Pending adjustment at Location A is found by the new guard
+    StockAdjustment.findOne.mockResolvedValueOnce(pendingAdjAtA);
+
+    await expect(
+      movementService.createMovement(USER_B_ID, {
+        originLocationId: LOCATION_B_ID,
+        destinationLocationId: LOCATION_A_ID,
+        items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test('blocks (409) when origin Location B has a pending adjustment for Goods A', async () => {
+    setupMovementPrechecks();
+
+    // Pending adjustment at origin Location B — equally dangerous: the
+    // adjustment may change the stock that the movement is about to deduct.
+    StockAdjustment.findOne.mockResolvedValueOnce(pendingAdjAtB);
+
+    await expect(
+      movementService.createMovement(USER_B_ID, {
+        originLocationId: LOCATION_B_ID,
+        destinationLocationId: LOCATION_A_ID,
+        items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test('proceeds when no pending adjustment exists at either location', async () => {
+    setupMovementPrechecks();
+
+    // No pending adjustment at origin or destination
+    StockAdjustment.findOne.mockResolvedValueOnce(null);
 
     const createdHeader = {
       id: 1,
@@ -1234,7 +1269,6 @@ describe('Scenario 10 — Movement Creation vs Pending Stock Adjustment (Gap Ana
     MovementHeader.create.mockResolvedValue(createdHeader);
     MovementDetail.bulkCreate.mockResolvedValue([]);
 
-    // Movement succeeds — the pending adjustment at Location A is completely ignored
     const { movement } = await movementService.createMovement(USER_B_ID, {
       originLocationId: LOCATION_B_ID,
       destinationLocationId: LOCATION_A_ID,
@@ -1243,41 +1277,34 @@ describe('Scenario 10 — Movement Creation vs Pending Stock Adjustment (Gap Ana
 
     expect(movement).toBeDefined();
     expect(movement.status).toBe('PENDING_HEAD_APPROVAL');
-
-    // Confirm StockAdjustment was never queried by createMovement
-    expect(StockAdjustment.findOne).not.toHaveBeenCalled();
-    expect(StockAdjustment.findAll).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------------
-  // EXPECTED behaviour: movement should be blocked — but this test will FAIL
-  // because the guard does not exist in the current codebase.
-  // -------------------------------------------------------------------------
-  test('EXPECTED (currently fails) — movement from B→A must be rejected 409 when Location A has a pending adjustment for Goods A', async () => {
+  test('pending adjustment guard is called with both location IDs', async () => {
     setupMovementPrechecks();
-
-    MovementHeader.findAll.mockResolvedValue([]); // no route-scoped duplicate
-    MovementHeader.findOne.mockResolvedValue(null); // no in-flight MovementHeader
+    StockAdjustment.findOne.mockResolvedValueOnce(null);
 
     const createdHeader = {
-      id: 1,
-      movementNumber: 'MV-202603-00001',
-      originLocationId: LOCATION_B_ID,
-      destinationLocationId: LOCATION_A_ID,
-      status: 'PENDING_HEAD_APPROVAL',
-      update: jest.fn(),
+      id: 1, movementNumber: 'MV-202603-00001',
+      originLocationId: LOCATION_B_ID, destinationLocationId: LOCATION_A_ID,
+      status: 'PENDING_HEAD_APPROVAL', update: jest.fn(),
     };
     MovementHeader.create.mockResolvedValue(createdHeader);
     MovementDetail.bulkCreate.mockResolvedValue([]);
 
-    // This assertion will fail: the code resolves instead of rejecting,
-    // proving that createMovement has no guard against pending StockAdjustments.
-    await expect(
-      movementService.createMovement(USER_B_ID, {
-        originLocationId: LOCATION_B_ID,
-        destinationLocationId: LOCATION_A_ID,
-        items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
-      })
-    ).rejects.toMatchObject({ statusCode: 409 });
+    await movementService.createMovement(USER_B_ID, {
+      originLocationId: LOCATION_B_ID,
+      destinationLocationId: LOCATION_A_ID,
+      items: [{ goodsId: GOODS_A_ID, quantity: 10 }],
+    });
+
+    // Verify the guard was called and its Stock include filters on both locations
+    expect(StockAdjustment.findOne).toHaveBeenCalledTimes(1);
+    const callArg = StockAdjustment.findOne.mock.calls[0][0];
+    expect(callArg.where).toMatchObject({ status: 'pending' });
+    const stockInclude = callArg.include.find((i) => i.as === 'stock');
+    const inSymbol = Object.getOwnPropertySymbols(stockInclude.where.locationId)[0];
+    expect(stockInclude.where.locationId[inSymbol]).toEqual(
+      expect.arrayContaining([LOCATION_A_ID, LOCATION_B_ID])
+    );
   });
 });

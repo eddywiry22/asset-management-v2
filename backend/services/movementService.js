@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { sequelize, MovementHeader, MovementDetail, Location, Goods, Stock, User } = require('../models');
+const { sequelize, MovementHeader, MovementDetail, Location, Goods, Stock, StockAdjustment, User } = require('../models');
 const AppError = require('../utils/AppError');
 const { createAuditLog } = require('./auditLogService');
 const { ACTIVE_MOVEMENT_STATUSES: ACTIVE_STATUSES } = require('../utils/constants');
@@ -118,6 +118,34 @@ const findActiveMovementForGoods = async (goodsIds, transaction = null) => {
   };
   if (transaction) findOpts.transaction = transaction;
   return MovementHeader.findOne(findOpts);
+};
+
+/**
+ * Returns the first pending StockAdjustment whose stock record matches any of
+ * the supplied goodsIds at either the origin or destination location.
+ *
+ * A pending adjustment represents uncommitted intent to change a location's
+ * stock quantity. Allowing a movement to proceed while such an adjustment is
+ * pending creates a race: the movement may finalise (deducting/adding stock)
+ * before the adjustment is reviewed, leaving the stock count inconsistent.
+ * Blocking here forces operators to resolve open adjustments before committing
+ * stock to a movement.
+ */
+const findPendingAdjustmentForGoods = async (goodsIds, originLocationId, destinationLocationId, transaction = null) => {
+  const findOpts = {
+    where: { status: 'pending' },
+    include: [{
+      model: Stock,
+      as: 'stock',
+      where: {
+        goodsId: { [Op.in]: goodsIds },
+        locationId: { [Op.in]: [originLocationId, destinationLocationId] },
+      },
+      required: true,
+    }],
+  };
+  if (transaction) findOpts.transaction = transaction;
+  return StockAdjustment.findOne(findOpts);
 };
 
 // ---------------------------------------------------------------------------
@@ -264,6 +292,19 @@ const createMovement = async (requestedById, data) => {
     if (inFlight) {
       throw new AppError(
         `One or more requested goods are already part of an active movement (${inFlight.movementNumber})`,
+        409
+      );
+    }
+
+    // Pending stock adjustment guard — block if any requested goods have a
+    // pending (not yet approved or rejected) StockAdjustment at either the
+    // origin or destination location. Resolving the adjustment first prevents
+    // a race between the adjustment review and the movement finalization that
+    // could otherwise leave the stock count in an inconsistent state.
+    const pendingAdj = await findPendingAdjustmentForGoods(requestedGoodsIds, originLocationId, destinationLocationId, t);
+    if (pendingAdj) {
+      throw new AppError(
+        `One or more requested goods have a pending stock adjustment at the origin or destination location. Approve or reject that adjustment before creating a movement.`,
         409
       );
     }
